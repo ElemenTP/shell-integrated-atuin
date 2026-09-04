@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>AtuinNative</AssemblyName>
+    <RootNamespace>AtuinNative</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Ship the module manifest + script module next to the binary so the
+       dotnet output directory is a complete, importable module (also used by
+       the CMake install rule and by Windows packaging). -->
+  <ItemGroup>
+    <None Include="..\atuin-native.psd1" Link="atuin-native.psd1"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\atuin-native.psm1" Link="atuin-native.psm1"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
