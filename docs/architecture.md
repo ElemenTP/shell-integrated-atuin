@@ -32,14 +32,15 @@ Atuin 的 shell 集成在每个命令生命周期内需要多次启动独立进�
 │  ┌─────────────────────────────────────────────────────────────┐  │
 │  │  ffi.rs — extern "C" atuin_session_* / atuin_history_* API  │  │
 │  │  参数转换、panic 隔离、fork guard、输出内存所有权管理          │  │
-│  │  tui.rs — ratatui 全屏搜索 TUI（共享 zsh / pwsh）            │  │
-│  │  tui_input.rs — 无回调的终端输入与 raw-mode RAII             │  │
 │  └──────────────────────────┬──────────────────────────────────┘  │
-│                             │ path dependency, features=["in-process"]
+│                             │ path dependency, features=["client","in-process"]
 │  ┌──────────────────────────▼──────────────────────────────────┐  │
 │  │  ../atuin/                                                   │  │
-│  │  crates/atuin-client/src/session.rs                         │  │
+│  │  crates/atuin/src/session.rs                                │  │
 │  │  Session — Settings / Sqlite / HistoryStore / Key 常驻缓存   │  │
+│  │  + 复用上游 history/search/交互式 TUI 命令实现               │  │
+│  │  crates/atuin/src/command/client/search/in_process_event.rs │  │
+│  │  仅 Unix 进程内输入：替代 crossterm::event 避免 SIGWINCH     │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └─────────────────────┬──────────────────────┬──────────────────────┘
                       │ libatuin_ffi.{so,dylib,dll}
@@ -71,14 +72,16 @@ Atuin 源码通过 `#[cfg(feature = "in-process")]` 做最小化加法修改，
 
 | 文件 | 修改 |
 | --- | --- |
-| `crates/atuin-client/Cargo.toml` | 新增 `in-process = []` feature |
-| `crates/atuin-client/src/lib.rs` | `#[cfg(feature = "in-process")] pub mod session;` |
-| `crates/atuin-client/src/session.rs` | **新建** — 常驻 Session、history start/end、`search(mode, query, limit)`、multi-thread runtime 与 SQLite pool 关闭 |
+| `crates/atuin/Cargo.toml` | 新增 `in-process` feature（启用 `client` 与 `atuin-client/in-process`） |
+| `crates/atuin/src/lib.rs` | **新建** — 使 `atuin` 同时可作为 library 使用 |
+| `crates/atuin/src/session.rs` | **新建** — 进程内 Session；history/end/search 直接委托上游 `command::client::*` |
+| `crates/atuin/src/command/client/history.rs` | 抽出 `handle_start_with_cwd` / `handle_end`，供 Session 复用 |
+| `crates/atuin/src/command/client/search.rs` | 抽出 `run_non_interactive_with_context`；新增 `in_process_event` 模块声明 |
+| `crates/atuin/src/command/client/search/interactive.rs` | 输入层在 `in-process` 下切换到安全事件源，其余上游 TUI 状态机/绘制完全复用 |
 | `crates/atuin-client/src/settings.rs` | meta store 改为可替换的 `Arc<MetaStore>` 全局缓存，新增 `close_meta_store()` |
 | `crates/atuin-client/src/meta.rs` | 新增 `MetaStore::close()`，关闭 meta.db 的 sqlx worker |
 | `crates/atuin-client/src/database.rs` | `Sqlite::close()` 改为公开方法，供卸载路径等待 sqlx worker |
 | `crates/atuin-client/src/record/sqlite_store.rs` | 新增 `SqliteStore::close()`，关闭 records.db 的 sqlx worker |
-| `crates/atuin-domain/src/record/mod.rs` | eyre 0.19 兼容的 `wrap_err` 调整 |
 
 `Session::new(data_dir: Option<&Path>)` 内部：
 
@@ -185,8 +188,10 @@ zsh 模块提供 6 个 builtin。**关键协议**：所有可能被 hook 使用�
 
 - shell 集成路径（history 记录、prefix search、交互式 TUI 搜索）全部是进程内的；
   **daemon 模式和网络 sync 仍由官方 `atuin` 二进制完成**
-- TUI 复用 Atuin 的 `enter_accept` 配置；当前不实现 inspector、filter-mode
-  循环与 inline/popup 模式（Ctrl+S 可循环 Fuzzy → Prefix → FullText）
+- 交互式 TUI 直接复用上游 `search/interactive.rs` 的完整状态机与绘制
+  （tabs/inspector/预览/键位配置等）；仅在 Unix 进程内把事件源替换为
+  `in_process_event.rs`，避免 `crossterm::event` 的 SIGWINCH 回调在
+  `dlclose` 后悬挂。上游支持的功能因此同步继承
 - zsh 模块构建依赖已 `configure` 的 zsh 源码树（仅头文件）
 - PowerShell 模块目标框架为 `net8.0`，需要 .NET SDK 8+（或 roll-forward 环境）
 
@@ -196,8 +201,7 @@ zsh 模块提供 6 个 builtin。**关键协议**：所有可能被 hook 使用�
 shell-integrated-atuin/
 ├── rust_src/                     # FFI crate (cdylib)
 │   ├── Cargo.toml
-│   └── src/lib.rs, ffi.rs        # C API + 27 个 Rust 单元测试
-│       tui.rs / tui_input.rs     # 交互式 TUI 与终端输入
+│   └── src/lib.rs, ffi.rs        # C API + 19 个 Rust 单元测试
 ├── zsh_src/                      # zsh 模块
 │   ├── atuin_ffi.h               # C 头文件
 │   ├── atuin_module.c            # zsh shim（5 个 builtin）

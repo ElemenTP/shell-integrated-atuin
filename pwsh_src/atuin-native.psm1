@@ -42,7 +42,7 @@ if (-not $env:ATUIN_FFI_PATH) {
 # ---- Environment visible to native Rust code ---------------------------------
 # .NET's $env: does not call setenv() on Unix; the embedded Rust library reads
 # ATUIN_SHELL / ATUIN_SESSION through std::env, so write both blocks.
-[AtuinNative.AtuinEnvironment]::Set('ATUIN_SHELL', 'pwsh')
+[AtuinNative.AtuinEnvironment]::Set('ATUIN_SHELL', 'powershell')
 
 # ---- Native session (created once, lives for the pwsh process) ---------------
 $script:Session = $null

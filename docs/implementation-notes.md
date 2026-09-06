@@ -6,11 +6,11 @@
 
 ### 1.1 常驻 Session 使用 multi-thread tokio runtime
 
-`atuin-client/src/session.rs` 持有一个多线程 `Runtime`：
+`crates/atuin/src/session.rs` 持有一个多线程 `Runtime`：
 
 ```rust
 let runtime = tokio::runtime::Builder::new_multi_thread()
-    .worker_threads(2)
+    .worker_threads(8)
     .enable_all()
     .build()?;
 ```
@@ -27,7 +27,7 @@ fire-and-forget。多线程 runtime 的 worker 会在 builtin 返回后立即消
 2. **fork guard**：`$()`、`&`、管道等 fork 子进程在触碰 runtime 前被拒绝
 3. **显式 shutdown**：`Session::drop` 调用 `shutdown_timeout(10s)`，
    等待 worker 退出和在途 history_end 完成后才允许 `dlclose`
-4. **线程数受控**：`worker_threads(2)`，一个 shell 只常驻少量 worker
+4. **线程数受控**：`worker_threads(8)`，一个 shell 只常驻少量 worker
 
 `shutdown_timeout` 的调用链：
 
@@ -84,8 +84,11 @@ history_store.push(h).await?; // 加密后写入 records.db
 ### 1.4 feature 是纯加法的
 
 - 默认构建不包含 `in-process`，官方行为不变
-- `#[cfg(feature = "in-process")] pub mod session;` 只新增模块
-- `HistoryCaptured` 新增字段使用 builder 的 `default`，不影响既有调用
+- `crates/atuin/src/lib.rs` 让 `atuin` 二进制 crate 同时可作为 library
+  使用；`#[cfg(feature = "in-process")] pub mod session;` 只新增进程内会话
+- `Session` 不再在 `atuin-client` 中重复实现 history/search/TUI，而是调用
+  `crates/atuin/src/command/client/{history,search}/...` 中的上游命令代码，
+  同步上游功能时只需要跟上 CLI 实现
 
 ## 2. Rust FFI 层
 
@@ -162,28 +165,26 @@ macOS/Windows 在 `dlclose` 后可能调用悬挂析构器。全局 `Mutex<Optio
 
 ### 2.7 进程内交互式 TUI（`atuin_search_interactive`）
 
-官方 `atuin search -i` 是一个独立进程，退出即回收。进程内实现必须自己
-保证终端状态与卸载安全：
+TUI 本身**不是重新实现**：`Session::interactive_search` 直接调用上游
+`command::client::search::interactive::history()`，因此官方 TUI 的
+tabs/inspector/预览、keymap、filter/search mode 循环等全部同步继承。
 
-- 输出写 stdout（TTY 时）或 `/dev/tty` / `CONOUT$`（stdout 被重定向时）
-- zsh/pwsh 的编辑器本身已把终端置于自己的模式，TUI 进入前保存 termios，
-  Drop 时逐字节恢复，panic 也被 `ffi_guard!` 包住后先恢复再返回
-- 交替屏幕（`?1049h/l`）由 RAII `ActiveScreen` 保证退出；即使搜索
-  refresh 出错也先离开交替屏幕、再恢复 raw mode
-- **Unix 上不使用 `crossterm::event`**：它会懒加载注册 SIGWINCH
-  signal-hook，注册后永不注销。独立二进制无所谓，但在 `dlclose` 场景
-  会留下指向已卸载代码的信号处理器，窗口一变尺寸就段错误。`tui_input.rs`
-  改为自己 `open("/dev/tty")` + `poll(2)` + 字节级 CSI/UTF-8 解析，
-  尺寸变化靠 100ms 的 poll 超时重查 `TIOCGWINSZ` 感知
+进程内特有的两个改动：
+
+- **输出/终端由上游 `Stdout` 管理**：stdout 非 TTY 时自动落到 `/dev/tty`
+  / `CONOUT$`，raw mode 与 alternate screen 由上游 RAII 恢复；panic 仍被
+  `ffi_guard!` 隔离。
+- **Unix 事件源替换为 `in_process_event.rs`**：上游默认的
+  `crossterm::event` 会懒加载注册 SIGWINCH signal-hook，注册后永不注销。
+  独立二进制无所谓，但在 `dlclose` 场景会留下指向已卸载代码的信号处理器，
+  窗口一变尺寸就段错误。`in_process_event.rs` 只提供 `poll/read` 两个函数，
+  内部自管 `/dev/tty` + `poll(2)` + 字节级 CSI/UTF-8 解析，并把按键翻译成
+  crossterm `KeyEvent` 后交给上游状态机；窗口尺寸变化靠上游循环周期重绘感知。
 - Windows 上 `crossterm::event` 只做 `WaitForMultipleObjects` /
-  `ReadConsoleInputW`，无回调无线程，可以安全保留
-- 注意 ratatui 的 `Terminal::clear()` 会通过 ESC[6n 查询光标位置并间接
-  初始化 crossterm event 模块，因此 TUI 不调用它；首帧 draw 天然全量绘制
+  `ReadConsoleInputW`，无回调无线程，所以仍直接走 crossterm 事件源。
 
-TUI 查询不通过子进程：`Session::search(mode, query, limit)` 在当前
-history.db 连接池上实时查询（Fuzzy 默认，Ctrl+S 循环 Prefix/FullText），
-上限 200 条。`enter_accept` 配置决定 Enter 是否返回 `__atuin_accept__:`
-前缀；Esc / Ctrl+C / Ctrl+G 返回取消，shell 保持原 buffer。
+`enter_accept` 配置决定 Enter 是否返回 `__atuin_accept__:` 前缀；Esc /
+Ctrl+C / Ctrl+G 返回取消，shell 保持原 buffer。
 
 ## 3. zsh 模块
 

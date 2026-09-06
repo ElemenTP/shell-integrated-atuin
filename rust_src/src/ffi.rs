@@ -74,7 +74,7 @@ macro_rules! ffi_guard {
 
 /// Opaque session handle passed to C code.
 pub struct SessionHandle {
-    session: atuin_client::session::Session,
+    session: atuin::session::Session,
     /// PID at session creation time. Used to detect fork() children where the
     /// tokio runtime is in a corrupted state and must not be used.
     creator_pid: u32,
@@ -144,7 +144,7 @@ pub extern "C" fn atuin_session_create(data_dir: *const c_char) -> *mut SessionH
                 }
             };
 
-            let session = match atuin_client::session::Session::new(dir.as_deref()) {
+            let session = match atuin::session::Session::new(dir.as_deref()) {
                 Ok(s) => s,
                 Err(e) => {
                     set_error(&e.to_string());
@@ -457,7 +457,7 @@ pub unsafe extern "C" fn atuin_search_interactive(
                 unsafe { CStr::from_ptr(query) }.to_str().unwrap_or("")
             };
 
-            match crate::tui::interactive_search(&h.session, q) {
+            match h.session.interactive_search(q) {
                 Ok(Some(selected)) => {
                     let out_ptr = match into_raw_or_truncate(selected) {
                         Ok(ptr) => ptr,
@@ -546,18 +546,14 @@ pub extern "C" fn atuin_version() -> *const c_char {
 /// error slot. Do NOT free it; copy immediately if the value must outlive the
 /// next FFI call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn atuin_last_error(out: *mut *mut c_char) {
-    if out.is_null() {
-        return;
-    }
-    let c_string = LAST_ERROR.lock().ok().and_then(|e| e.clone());
-    // SAFETY: `out` points to a writable `char *` slot.
-    unsafe {
-        *out = match c_string {
-            Some(c_string) => c_string.into_raw(),
-            None => ptr::null_mut(),
-        };
-    }
+pub extern "C" fn atuin_last_error() -> *const c_char {
+    let guard = match LAST_ERROR.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard
+        .as_ref()
+        .map_or(ptr::null(), |error| error.as_ptr())
 }
 
 // ---------------------------------------------------------------------------
@@ -570,19 +566,11 @@ mod tests {
     use std::ffi::CString;
     use std::ptr;
 
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     // The exported functions are `unsafe extern "C"` to make the raw-pointer
     // safety contract explicit. These test-only safe wrappers keep the test
     // bodies focused on behavior while still validating the same code paths.
     fn session_create(data_dir: *const c_char) -> *mut SessionHandle {
-        unsafe { super::atuin_session_create(data_dir) }
+        super::atuin_session_create(data_dir)
     }
 
     fn session_destroy(handle: *mut SessionHandle) {
@@ -677,8 +665,7 @@ mod tests {
     }
 
     fn last_error_as_str() -> Option<String> {
-        let mut ptr: *mut c_char = ptr::null_mut();
-        unsafe { atuin_last_error(&mut ptr) };
+        let ptr = atuin_last_error();
         if ptr.is_null() {
             None
         } else {

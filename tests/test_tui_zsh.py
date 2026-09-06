@@ -7,7 +7,7 @@ strokes. It verifies:
 
   * the TUI enters/leaves the alternate screen;
   * Enter selects the newest match;
-  * ArrowDown + Enter selects the older match;
+  * ArrowUp + Enter selects the older match (upstream default);
   * Escape cancels and leaves $ATUIN_SEARCH_SELECTED empty;
   * terminal raw mode is restored (the shell still echoes/executes commands);
   * the plugin's atuin-search ZLE widget (Ctrl+R) drives the same TUI and
@@ -138,6 +138,19 @@ def main() -> int:
         )
         tests += 1
 
+        # ---- Export the env vars the upstream TUI expects -------------------
+        # The real plugin does this before search; the direct-builtin tests need
+        # the same environment because the upstream interactive search calls
+        # current_context() and reads ATUIN_SHELL for the accept prefix.
+        shell.run(
+            "atuin_session_id >/dev/null; "
+            "export ATUIN_SESSION; "
+            "export ATUIN_SHELL=zsh; "
+            "print -r -- TUI_ENV_OK",
+            "TUI_ENV_OK",
+        )
+        tests += 1
+
         # ---- Seed history ----------------------------------------------------
         shell.run(
             "atuin_history_start 'echo tui-oldest' \"$PWD\" >/dev/null 2>&1; "
@@ -161,10 +174,10 @@ def main() -> int:
         )
         tests += 1
 
-        # ---- 2. ArrowDown + Enter selects the older match --------------------
+        # ---- 2. ArrowUp + Enter selects the older match --------------------
         shell.send('atuin_search_interactive "echo tui"\n')
         wait_for_alt_screen(shell, entered=True)
-        shell.send("\x1b[B")  # ArrowDown
+        shell.send("\x1b[A")  # ArrowUp
         shell.send("\r")
         wait_for_alt_screen(shell, entered=False)
         shell.run(

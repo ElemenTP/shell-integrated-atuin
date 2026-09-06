@@ -67,7 +67,7 @@ endif()
 message(STATUS "Atuin source: ${ATUIN_SRC_DIR}")
 
 # Create a symlink so rust_src/Cargo.toml path dependency resolves correctly:
-#   atuin-client = { path = "../atuin/crates/atuin-client" }
+#   atuin = { path = "../atuin/crates/atuin", features = ["client", "in-process"] }
 # Guard against self-referencing symlinks (ATUIN_SRC_DIR == ATUIN_LINK).
 get_filename_component(_atuin_real "${ATUIN_LINK}" REALPATH)
 if(NOT _atuin_real STREQUAL "${ATUIN_SRC_DIR}")
@@ -343,7 +343,7 @@ if(BUILD_TESTS)
     add_test(NAME zsh_module_unit COMMAND zsh_module_unit)
 
     add_custom_target(test-rust
-        COMMAND ${CARGO} test ${CARGO_RELEASE_FLAG}
+        COMMAND ${CARGO} test ${CARGO_RELEASE_FLAG} -- --test-threads=1
         WORKING_DIRECTORY "${RUST_SRC_DIR}"
         USES_TERMINAL
     )

@@ -20,7 +20,8 @@ Native 模式（进程内，0 次 fork）:
 ```
 
 `Session` 在 shell 进程内常驻，持有 `history.db` / `records.db` 连接、
-tokio multi-thread runtime 与加密 key。precmd 中的 `history_end` 以
+tokio multi-thread runtime 与加密 key；history/end/search/TUI 都复用上游
+`atuin` 命令实现而不是重新发明。precmd 中的 `history_end` 以
 fire-and-forget 方式提交到 worker 线程，builtin 立即返回；卸载模块时
 先等待 tokio worker 退出，再关闭 history/records/meta 三个 SQLite pool，
 最后才允许 `dlclose`。
@@ -33,9 +34,9 @@ fire-and-forget 方式提交到 worker 线程，builtin 立即返回；卸载模
 | pwsh (PowerShell 7+) | Windows, Linux, macOS | `Import-Module atuin-native` |
 
 当前原生路径覆盖 shell hook、prefix search、autosuggest 与交互式全屏 TUI
-搜索（官方 `atuin search --interactive` 的进程内替代，zsh Ctrl+R 与 pwsh
-Ctrl+R 共用同一 Rust/ratatui 实现）。daemon 模式与网络 sync 仍使用官方
-`atuin` 二进制。
+搜索。TUI 直接复用上游 `atuin search --interactive` 的完整 ratatui 状态机
+（tabs/inspector/预览/键位配置等），仅 Unix 输入层做了 `dlclose` 安全替换。
+daemon 模式与网络 sync 仍使用官方 `atuin` 二进制。
 
 ## 编译
 
@@ -149,7 +150,7 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 | `atuin_history_start "cmd" [cwd]` | 记录命令开始，写入 `$ATUIN_HISTORY_ID` 并输出 ID |
 | `atuin_history_end <id> <exit> [duration_ns] [--sync]` | 记录命令结束。默认 fire-and-forget，`--sync` 同步等待并报告错误 |
 | `atuin_search <query> [limit]` | 前缀搜索，结果写入 `$ATUIN_SEARCH_RESULT` |
-| `atuin_search_interactive [query]` | 全屏交互式 TUI 搜索，结果写入 `$ATUIN_SEARCH_SELECTED`；返回 0=选中、1=取消、2=错误 |
+| `atuin_search_interactive [query]` | 全屏交互式 TUI 搜索（上游完整 TUI），结果写入 `$ATUIN_SEARCH_SELECTED`；返回 0=选中、1=取消、2=错误 |
 | `atuin_session_id` | 输出并写入 `$ATUIN_SESSION` |
 | `atuin_version` | 输出并写入 `$ATUIN_NATIVE_VERSION` |
 
@@ -236,7 +237,7 @@ cmake --build build --config Release --target test-install-pwsh
 
 ```
 shell-integrated-atuin/
-├── rust_src/                     # Rust FFI crate (cdylib，含交互式 TUI)
+├── rust_src/                     # Rust FFI crate (cdylib, 薄 FFI 边界)
 ├── zsh_src/                      # zsh 模块 + 插件
 ├── pwsh_src/                     # PowerShell 二进制模块 + 单元测试项目
 ├── tests/                        # 系统测试 / 集成测试 / C 单元测试

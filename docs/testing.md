@@ -4,15 +4,15 @@
 
 | 测试 | 类型 | 入口 | 验证内容 |
 | --- | --- | --- | --- |
-| `cargo test` | Rust 单元测试 | `rust_src/src/ffi.rs`、`tui.rs` | FFI 生命周期、NULL 安全、错误槽、history 往返、search limit、UUID 稳定性、record store、TUI 编辑状态机 |
+| `cargo test` | Rust 单元测试 | `rust_src/src/ffi.rs` | FFI 生命周期、NULL 安全、错误槽、history 往返、search limit、UUID 稳定性、record store |
 | `zsh_module_unit` | C 单元测试 | `tests/test_zsh_module_unit.c` | duration/limit/exit 参数解析 |
 | `ffi_smoke` | C 系统测试 | `tests/ffi_smoke.c` | `dlopen` 加载真实 `libatuin_ffi`，遍历全部导出函数，fork guard |
 | `test-zsh` | zsh 集成测试 | `tests/test_zsh.sh` | `zmodload`、builtin 参数协议、history 往返、search、unload |
 | `test-fork-zsh` | zsh 系统测试 | `tests/test_fork_zsh.sh` | `$()`、`&`、管道、子 shell、进程替换、嵌套替换、fork 后父进程可用 |
 | `test-unload-zsh` | zsh 生命周期测试 | `tests/test_unload_zsh.sh` | 5 次 load/unload 不崩溃、不泄漏 tokio worker 线程 |
 | `test-plugin-zsh` | zsh 插件集成测试 | `tests/test_plugin_zsh.sh` | source 真实 `*.plugin.zsh`，驱动 preexec/precmd/zshaddhistory/autosuggest |
-| `test-tui-zsh` | zsh TUI pty 集成测试 | `tests/test_tui_zsh.py` | 真实 pty 下打开 TUI、Enter/↓/Esc、`$ATUIN_SEARCH_SELECTED`、默认 Ctrl+R / UpArrow bindkey、终端恢复 |
-| `test-install-zsh` | zsh 安装布局测试 | `tests/test_tui_zsh.py`（`PLUGIN` 指向安装 prefix） | `cmake --install` 后 source 安装出来的插件，Ctrl+R / UpArrow 仍能触发 TUI |
+| `test-tui-zsh` | zsh TUI pty 集成测试 | `tests/test_tui_zsh.py` | 真实 pty 下打开上游完整 TUI、Enter/↑/Esc、`$ATUIN_SEARCH_SELECTED`、默认 Ctrl+R / UpArrow bindkey、终端恢复 |
+| `test-install-zsh` | zsh 安装布局测试 | `tests/test_tui_zsh.py`（`PLUGIN` 指向安装 prefix） | `cmake --install` 后 source 安装出来的插件，Ctrl+R / UpArrow 仍能触发上游完整 TUI |
 | `test-pwsh-unit` | PowerShell 托管单元测试 | `pwsh_src/AtuinNative.Tests` | `AtuinSession` / `AtuinEnvironment` 的 17 项断言 |
 | `test-pwsh` | pwsh 集成测试 | `tests/test_pwsh.ps1` | Add-Type、manifest import、history/search、PSConsoleHostReadLine 恢复、3 次模块循环 |
 | `test-tui-pwsh` | pwsh TUI pty 集成测试 | `tests/test_tui_pwsh.py` | `SearchInteractive` 选中/取消、导入时自动绑定的 Ctrl+R / UpArrow 打开 TUI 并 `AcceptLine` |
