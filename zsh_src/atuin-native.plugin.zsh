@@ -233,24 +233,38 @@ if (( ${+ZSH_AUTOSUGGEST_STRATEGY} )); then
 fi
 
 # ---- Interactive search widgets -------------------------------------------
-# Native search is prefix-only, so the widgets fill the line with the best
-# (first) prefix match and print all matches to the terminal. This is the
-# in-process equivalent of the official atuin-search / atuin-up-search widgets
-# for the common "recall a recent command" workflow.
+# The widget calls the in-process full-screen TUI (official
+# `atuin search -i` replacement). The builtin runs inside the shell process —
+# no fork, no external atuin binary — and writes the selection to
+# $ATUIN_SEARCH_SELECTED, so the widget never needs command substitution.
 _atuin_native_search() {
     emulate -L zsh
     zle -I
 
-    atuin_search "$BUFFER" 20 2>/dev/null
-    zle reset-prompt
+    local __atuin_status
+    atuin_search_interactive "$BUFFER"
+    __atuin_status=$?
 
-    local output="${ATUIN_SEARCH_RESULT:-}"
-    if [[ -n "$output" ]]; then
-        print -r -- "$output" >/dev/tty
-        RBUFFER=""
-        LBUFFER="${output%%$'\n'*}"
-        zle -R
+    zle reset-prompt
+    # The TUI switches the terminal to raw mode; zsh had already enabled
+    # bracketed paste, so restore it exactly like the official widget does
+    # after the external TUI exits.
+    [[ -n ${zle_bracketed_paste[1]:-} ]] &&
+        printf '%s' "${zle_bracketed_paste[1]}" >/dev/tty
+
+    if (( __atuin_status == 0 )); then
+        local output="${ATUIN_SEARCH_SELECTED:-}"
+        if [[ -n "$output" ]]; then
+            RBUFFER=""
+            LBUFFER="$output"
+
+            if [[ $LBUFFER == __atuin_accept__:* ]]; then
+                LBUFFER=${LBUFFER#__atuin_accept__:}
+                zle accept-line
+            fi
+        fi
     fi
+    return 0
 }
 _atuin_native_search_vicmd() { _atuin_native_search "$@"; }
 _atuin_native_search_viins() { _atuin_native_search "$@"; }
@@ -276,4 +290,18 @@ if [[ -o interactive ]]; then
     # Compatibility widget names for atuin <= 17.2.1 users.
     zle -N _atuin_search_widget _atuin_native_search
     zle -N _atuin_up_search_widget _atuin_native_up_search
+
+    # Same default key bindings as `atuin init zsh` (see atuin_orig.zsh).
+    # The official init script binds these unconditionally; without them the
+    # widgets are registered but Ctrl+R / Up never reach the TUI.
+    bindkey -M emacs '^r' atuin-search
+    bindkey -M viins '^r' atuin-search-viins
+    bindkey -M vicmd '/' atuin-search
+    bindkey -M emacs '^[[A' atuin-up-search
+    bindkey -M vicmd '^[[A' atuin-up-search-vicmd
+    bindkey -M viins '^[[A' atuin-up-search-viins
+    bindkey -M emacs '^[OA' atuin-up-search
+    bindkey -M vicmd '^[OA' atuin-up-search-vicmd
+    bindkey -M viins '^[OA' atuin-up-search-viins
+    bindkey -M vicmd 'k' atuin-up-search-vicmd
 fi

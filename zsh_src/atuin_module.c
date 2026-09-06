@@ -9,6 +9,8 @@
  *   atuin_history_start  — record command start, returns history ID
  *   atuin_history_end    — record command end (sync or fire-and-forget)
  *   atuin_search         — prefix search, result in $ATUIN_SEARCH_RESULT
+ *   atuin_search_interactive — full-screen TUI search, result in
+ *                              $ATUIN_SEARCH_SELECTED
  *   atuin_session_id     — print session UUID
  *   atuin_version        — print library version
  */
@@ -31,6 +33,7 @@ static int bin_atuin_history_start(char *nam, char **args, Options ops, int func
 static int bin_atuin_history_end(char *nam, char **args, Options ops, int func);
 static int bin_atuin_session_id(char *nam, char **args, Options ops, int func);
 static int bin_atuin_search(char *nam, char **args, Options ops, int func);
+static int bin_atuin_search_interactive(char *nam, char **args, Options ops, int func);
 static int bin_atuin_version(char *nam, char **args, Options ops, int func);
 
 /* Builtin table */
@@ -38,6 +41,7 @@ static struct builtin bintab[] = {
     BUILTIN("atuin_history_start", 0, bin_atuin_history_start, 1, 2, 0, NULL, NULL),
     BUILTIN("atuin_history_end",   0, bin_atuin_history_end,   2, -1, 0, NULL, NULL),
     BUILTIN("atuin_search",        0, bin_atuin_search,        1, 2, 0, NULL, NULL),
+    BUILTIN("atuin_search_interactive", 0, bin_atuin_search_interactive, 0, 1, 0, NULL, NULL),
     BUILTIN("atuin_session_id",    0, bin_atuin_session_id,    0, 0, 0, NULL, NULL),
     BUILTIN("atuin_version",       0, bin_atuin_version,       0, 0, 0, NULL, NULL),
 };
@@ -64,8 +68,8 @@ static atuin_session_t *g_session = NULL;
  * trip. META_DUP tells metafy() to allocate and return a new string.
  */
 static void set_str_param(const char *name, char *val) {
-    if (!val) return;
-    setsparam((char *)name, metafy((char *)val, strlen(val), META_DUP));
+    const char *text = val ? val : "";
+    setsparam((char *)name, metafy((char *)text, strlen(text), META_DUP));
 }
 
 /* Report an FFI failure using the Rust-side last-error string.
@@ -186,6 +190,45 @@ bin_atuin_search(char *nam, char **args, Options ops, int func)
     set_str_param("ATUIN_SEARCH_RESULT", out);
     atuin_free_string(out);
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Builtin: atuin_search_interactive [query]                         */
+/*                                                                  */
+/* Opens the in-process full-screen search TUI on the controlling    */
+/* terminal (the official `atuin search -i` replacement). Blocks    */
+/* until the user selects a command or cancels; raw mode and the    */
+/* alternate screen are restored by the FFI layer.                  */
+/*                                                                  */
+/* Return status: 0 = selected ($ATUIN_SEARCH_SELECTED set),        */
+/*                1 = cancelled (parameter set to empty string),    */
+/*                2 = error.                                        */
+/* ------------------------------------------------------------------ */
+
+static int
+bin_atuin_search_interactive(char *nam, char **args, Options ops, int func)
+{
+    (void)nam; (void)ops; (void)func;
+
+    if (!g_session) {
+        zwarnnam(MODNAME, "session not initialized");
+        return 2;
+    }
+
+    const char *query = args[0] ? args[0] : "";
+
+    char *out = NULL;
+    int rc = atuin_search_interactive(g_session, query, &out);
+    if (rc < 0) {
+        report_ffi_error("atuin_search_interactive");
+        return 2;
+    }
+
+    /* The widget reads $ATUIN_SEARCH_SELECTED directly — no command
+     * substitution and therefore no fork. */
+    set_str_param("ATUIN_SEARCH_SELECTED", out ? out : "");
+    atuin_free_string(out);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */

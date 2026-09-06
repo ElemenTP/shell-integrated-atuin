@@ -16,6 +16,7 @@ Native 模式（进程内，0 次 fork）:
   preexec:   atuin_history_start "$1" "$PWD"   # builtin → FFI → Session
   precmd:    atuin_history_end "$ID" "$EXIT" "$duration"   # builtin → FFI
   自动补全:   atuin_search "$1" 1               # builtin，结果写入 $ATUIN_SEARCH_RESULT
+  交互式TUI:  atuin_search_interactive "$BUFFER"  # builtin，全屏 TUI，Ctrl+R widget
 ```
 
 `Session` 在 shell 进程内常驻，持有 `history.db` / `records.db` 连接、
@@ -31,8 +32,10 @@ fire-and-forget 方式提交到 worker 线程，builtin 立即返回；卸载模
 | zsh | Linux, macOS | `zmodload atuin_native` |
 | pwsh (PowerShell 7+) | Windows, Linux, macOS | `Import-Module atuin-native` |
 
-当前原生路径覆盖 shell hook、prefix search 与 autosuggest。交互式 TUI
-搜索、daemon 模式与网络 sync 继续使用官方 `atuin` 二进制。
+当前原生路径覆盖 shell hook、prefix search、autosuggest 与交互式全屏 TUI
+搜索（官方 `atuin search --interactive` 的进程内替代，zsh Ctrl+R 与 pwsh
+Ctrl+R 共用同一 Rust/ratatui 实现）。daemon 模式与网络 sync 仍使用官方
+`atuin` 二进制。
 
 ## 编译
 
@@ -136,7 +139,8 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 3. 注册 preexec / precmd / zshaddhistory hook
 4. 安装 zsh-autosuggestions 的 `atuin_native` strategy
 5. 定义 `atuin-search` / `atuin-up-search` 等兼容 ZLE widget
-6. 支持 OSC 133 标记（`ATUIN_PTY_PROXY_ACTIVE` 时）
+6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）
+7. 支持 OSC 133 标记（`ATUIN_PTY_PROXY_ACTIVE` 时）
 
 #### Builtin 命令
 
@@ -145,12 +149,18 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 | `atuin_history_start "cmd" [cwd]` | 记录命令开始，写入 `$ATUIN_HISTORY_ID` 并输出 ID |
 | `atuin_history_end <id> <exit> [duration_ns] [--sync]` | 记录命令结束。默认 fire-and-forget，`--sync` 同步等待并报告错误 |
 | `atuin_search <query> [limit]` | 前缀搜索，结果写入 `$ATUIN_SEARCH_RESULT` |
+| `atuin_search_interactive [query]` | 全屏交互式 TUI 搜索，结果写入 `$ATUIN_SEARCH_SELECTED`；返回 0=选中、1=取消、2=错误 |
 | `atuin_session_id` | 输出并写入 `$ATUIN_SESSION` |
 | `atuin_version` | 输出并写入 `$ATUIN_NATIVE_VERSION` |
 
 **fork 安全**：在 `$(...)`、`&`、管道非末位、子 shell 中调用 builtin 时，
 FFI fork guard 会拒绝调用并返回非零，不会崩溃。hook 脚本因此全部使用参数传递，
 不使用命令替换。
+
+**交互式 TUI 按键**：输入即模糊过滤（默认 fuzzy），`↑/↓`（或 `Ctrl+P/N`）
+选择，`Enter` 选中（`enter_accept = true` 时直接执行），`Tab` 只替换不执行，
+`Esc` / `Ctrl+C` / `Ctrl+G` 取消，`Ctrl+S` 在 fuzzy → prefix → full-text 间
+循环，`Ctrl+U` 清空、`Ctrl+W` 删词、`Ctrl+L` 重绘。
 
 ### pwsh
 
@@ -160,11 +170,13 @@ Import-Module atuin-native       # 安装后
 Import-Module /path/to/pwsh_src/AtuinNative/bin/Release/net8.0/atuin-native.psd1
 
 Get-AtuinNativeVersion
-Enable-AtuinSearchKeys           # 可选：绑定 Ctrl+R / UpArrow
+Enable-AtuinSearchKeys           # 可选：重新绑定（导入时已自动绑定）
 ```
 
 模块导入后自动替换 `PSConsoleHostReadLine`，在每行命令前后调用进程内
-`HistoryStart` / `HistoryEnd`；移除模块时恢复原始函数并释放 native session。
+`HistoryStart` / `HistoryEnd`，并**自动**把 Ctrl+R / UpArrow 绑定到进程内
+全屏 TUI 搜索（与 `atuin init powershell` 一致）；移除模块时恢复原始
+函数并释放 native session。
 
 直接使用托管封装：
 
@@ -173,6 +185,7 @@ $session = [AtuinNative.AtuinSession]::new($env:ATUIN_DATA_DIR)
 $id = $session.HistoryStart("my-command", (Get-Location).Path)
 $session.HistoryEnd($id, 0, 0, $true)   # sync
 $results = $session.SearchPrefix("my-command", 5)
+$selected = $session.SearchInteractive("my")   # 全屏 TUI；取消返回 $null
 $session.Dispose()
 ```
 
@@ -203,8 +216,12 @@ cmake --build build --config Release --target test-zsh
 cmake --build build --config Release --target test-fork-zsh
 cmake --build build --config Release --target test-unload-zsh
 cmake --build build --config Release --target test-plugin-zsh
+cmake --build build --config Release --target test-tui-zsh
+cmake --build build --config Release --target test-install-zsh
 cmake --build build --config Release --target test-pwsh-unit
 cmake --build build --config Release --target test-pwsh
+cmake --build build --config Release --target test-tui-pwsh
+cmake --build build --config Release --target test-install-pwsh
 ```
 
 测试分层与运行细节见 [`docs/testing.md`](docs/testing.md)。
@@ -219,7 +236,7 @@ cmake --build build --config Release --target test-pwsh
 
 ```
 shell-integrated-atuin/
-├── rust_src/                     # Rust FFI crate (cdylib)
+├── rust_src/                     # Rust FFI crate (cdylib，含交互式 TUI)
 ├── zsh_src/                      # zsh 模块 + 插件
 ├── pwsh_src/                     # PowerShell 二进制模块 + 单元测试项目
 ├── tests/                        # 系统测试 / 集成测试 / C 单元测试

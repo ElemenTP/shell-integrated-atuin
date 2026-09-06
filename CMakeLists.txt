@@ -38,6 +38,7 @@ endif()
 find_program(CARGO cargo REQUIRED)
 find_program(DOTNET dotnet)
 find_program(PWSH pwsh)
+find_program(PYTHON3 python3)
 
 if(BUILD_PWSH_MODULE AND NOT DOTNET)
     message(WARNING "dotnet not found — PowerShell module will not be built")
@@ -382,6 +383,38 @@ if(BUILD_TESTS)
             DEPENDS ${ZSH_MODULE_NAME}
             USES_TERMINAL
         )
+
+        if(PYTHON3)
+            add_custom_target(test-tui-zsh
+                COMMAND ${CMAKE_COMMAND} -E env
+                    "MODULE_DIR=${ZSH_MODULE_OUT_DIR}"
+                    "REPO_ROOT=${CMAKE_SOURCE_DIR}"
+                    "${PYTHON3}" "${CMAKE_SOURCE_DIR}/tests/test_tui_zsh.py"
+                DEPENDS ${ZSH_MODULE_NAME}
+                USES_TERMINAL
+            )
+
+            # Same TUI test, but against a real `cmake --install` prefix: this
+            # is exactly how users consume the plugin (`source .../atuin-native.plugin.zsh`).
+            set(INSTALL_TEST_PREFIX "${CMAKE_BINARY_DIR}/install-test")
+            set(_install_test_deps ${ZSH_MODULE_NAME})
+            if(BUILD_PWSH_MODULE)
+                list(APPEND _install_test_deps atuin_pwsh)
+            endif()
+            add_custom_target(test-install-zsh
+                COMMAND ${CMAKE_COMMAND} --install "${CMAKE_BINARY_DIR}"
+                    --config "$<CONFIG>" --prefix "${INSTALL_TEST_PREFIX}"
+                COMMAND ${CMAKE_COMMAND} -E env
+                    "MODULE_DIR=${INSTALL_TEST_PREFIX}/lib/zsh/atuin-native"
+                    "PLUGIN=${INSTALL_TEST_PREFIX}/lib/zsh/atuin-native/atuin-native.plugin.zsh"
+                    "REPO_ROOT=${CMAKE_SOURCE_DIR}"
+                    "${PYTHON3}" "${CMAKE_SOURCE_DIR}/tests/test_tui_zsh.py"
+                DEPENDS ${_install_test_deps}
+                USES_TERMINAL
+            )
+        else()
+            message(WARNING "python3 not found — zsh TUI integration test target disabled")
+        endif()
     endif()
 
     if(BUILD_PWSH_MODULE)
@@ -393,6 +426,35 @@ if(BUILD_TESTS)
                 DEPENDS atuin_pwsh
                 USES_TERMINAL
             )
+
+            if(PYTHON3)
+                add_custom_target(test-tui-pwsh
+                    COMMAND ${CMAKE_COMMAND} -E env
+                        "DLL_DIR=${PWSH_OUT_DIR}"
+                        "PWSH=${PWSH}"
+                        "${PYTHON3}" "${CMAKE_SOURCE_DIR}/tests/test_tui_pwsh.py"
+                    DEPENDS atuin_pwsh
+                    USES_TERMINAL
+                )
+
+                set(INSTALL_TEST_PREFIX "${CMAKE_BINARY_DIR}/install-test")
+                set(_install_test_deps atuin_pwsh)
+                if(BUILD_ZSH_MODULE)
+                    list(APPEND _install_test_deps ${ZSH_MODULE_NAME})
+                endif()
+                add_custom_target(test-install-pwsh
+                    COMMAND ${CMAKE_COMMAND} --install "${CMAKE_BINARY_DIR}"
+                        --config "$<CONFIG>" --prefix "${INSTALL_TEST_PREFIX}"
+                    COMMAND ${CMAKE_COMMAND} -E env
+                        "DLL_DIR=${INSTALL_TEST_PREFIX}/share/pwsh/modules/atuin-native"
+                        "PWSH=${PWSH}"
+                        "${PYTHON3}" "${CMAKE_SOURCE_DIR}/tests/test_tui_pwsh.py"
+                    DEPENDS ${_install_test_deps}
+                    USES_TERMINAL
+                )
+            else()
+                message(WARNING "python3 not found — pwsh TUI integration test target disabled")
+            endif()
         else()
             message(WARNING "pwsh not found — pwsh integration test target disabled")
         endif()
@@ -418,11 +480,17 @@ if(BUILD_TESTS)
     if(BUILD_ZSH_MODULE AND TARGET ${ZSH_MODULE_NAME})
         list(APPEND _check_all_deps
             test-zsh test-fork-zsh test-unload-zsh test-plugin-zsh)
+        if(PYTHON3)
+            list(APPEND _check_all_deps test-tui-zsh test-install-zsh)
+        endif()
     endif()
     if(BUILD_PWSH_MODULE)
         list(APPEND _check_all_deps test-pwsh-unit)
         if(PWSH)
             list(APPEND _check_all_deps test-pwsh)
+            if(PYTHON3)
+                list(APPEND _check_all_deps test-tui-pwsh test-install-pwsh)
+            endif()
         endif()
     endif()
     add_custom_target(check-all DEPENDS ${_check_all_deps})

@@ -38,6 +38,14 @@ int  atuin_history_end(atuin_session_t *s, const char *id, int64_t exit_code,
 int  atuin_search_prefix(atuin_session_t *s, const char *query, int limit,
                           char **out);
 
+/* Interactive full-screen search TUI (official `atuin search -i` replacement).
+ * Requires a controlling terminal; blocks until a selection is made.
+ * Return: 0 = *out receives the selected command (free with
+ * atuin_free_string; may be prefixed with __atuin_accept__:), 1 = cancelled
+ * (*out stays NULL), <0 = error (check atuin_last_error). */
+int  atuin_search_interactive(atuin_session_t *s, const char *query,
+                               char **out);
+
 /* Memory management. Passing NULL is safe. */
 void atuin_free_string(char *ptr);
 

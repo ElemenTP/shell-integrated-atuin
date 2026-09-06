@@ -7,11 +7,11 @@
 //! |-----------------------------------------|------------------------|------------------------|
 //! | `atuin_history_start` → `*id_out`       | Rust-allocated UTF-8   | `atuin_free_string`    |
 //! | `atuin_search_prefix` → `*out`          | Rust-allocated UTF-8   | `atuin_free_string`    |
+//! | `atuin_search_interactive` → `*out`     | Rust-allocated UTF-8   | `atuin_free_string`    |
 //! | `atuin_session_uuid`                    | Session-owned, static  | must NOT be freed      |
 //! | `atuin_version`                         | Process-lifetime       | must NOT be freed      |
 //! | `atuin_last_error`                      | Valid until next call  | must NOT be freed      |
 
-use atuin_client::session::Session;
 use libc::c_char;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
@@ -46,13 +46,6 @@ fn clear_error() {
     }
 }
 
-fn last_error_ptr() -> *const c_char {
-    match LAST_ERROR.lock() {
-        Ok(guard) => guard.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
-        Err(_) => ptr::null(),
-    }
-}
-
 /// FFI panic guard: catches Rust panics before they can unwind across the C
 /// ABI boundary (undefined behavior) and converts them to an error return.
 macro_rules! ffi_guard {
@@ -81,7 +74,7 @@ macro_rules! ffi_guard {
 
 /// Opaque session handle passed to C code.
 pub struct SessionHandle {
-    session: Session,
+    session: atuin_client::session::Session,
     /// PID at session creation time. Used to detect fork() children where the
     /// tokio runtime is in a corrupted state and must not be used.
     creator_pid: u32,
@@ -95,11 +88,8 @@ pub struct SessionHandle {
 /// function that may touch the runtime must call this after validating `handle`.
 macro_rules! guard_fork {
     ($handle:expr, $error_val:expr) => {
-        if unsafe { &*$handle }.creator_pid != std::process::id() {
-            set_error(
-                "refusing to use session in forked child process \
-                 (tokio runtime is invalid after fork)",
-            );
+        if { &*$handle }.creator_pid != std::process::id() {
+            set_error("refusing call in forked child process");
             return $error_val;
         }
     };
@@ -135,7 +125,7 @@ fn into_raw_or_truncate(value: String) -> Result<*mut c_char, ()> {
 /// `data_dir`, when non-null, must point to a valid NUL-terminated C string
 /// for the duration of this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn atuin_session_create(data_dir: *const c_char) -> *mut SessionHandle {
+pub extern "C" fn atuin_session_create(data_dir: *const c_char) -> *mut SessionHandle {
     ffi_guard!(
         {
             let dir: Option<PathBuf> = if data_dir.is_null() {
@@ -154,7 +144,7 @@ pub unsafe extern "C" fn atuin_session_create(data_dir: *const c_char) -> *mut S
                 }
             };
 
-            let session = match Session::new(dir.as_deref()) {
+            let session = match atuin_client::session::Session::new(dir.as_deref()) {
                 Ok(s) => s,
                 Err(e) => {
                     set_error(&e.to_string());
@@ -272,11 +262,18 @@ pub unsafe extern "C" fn atuin_history_start(
                 unsafe { CStr::from_ptr(intent) }.to_str().ok()
             };
 
-            let id = match h.session.history_start(cmd, cwd_str, auth, int) {
+            let id = match h.session.history_start(cmd, cwd_str, auth, None, int) {
                 Ok(id) => id,
                 Err(e) => {
                     set_error(&e.to_string());
                     return -1;
+                }
+            };
+
+            let id = match id {
+                Some(id) => id,
+                None => {
+                    return 0;
                 }
             };
 
@@ -409,8 +406,84 @@ pub unsafe extern "C" fn atuin_search_prefix(
     )
 }
 
-/// Free a string returned by `atuin_history_start` or `atuin_search_prefix`.
-/// NULL is safe (no-op).
+/// Interactive TUI search over the in-process session's history.
+///
+/// Opens a full-screen ratatui UI on the controlling terminal, prefilled with
+/// `query`. This is the native replacement for `atuin search --interactive`
+/// and requires a controlling terminal (stdout may be redirected; output and
+/// input then use `/dev/tty` / `CONOUT$`).
+///
+/// Return codes:
+/// * `0`  — a command was selected; `*out` receives a Rust-allocated UTF-8
+///   string (free with `atuin_free_string`). The string is prefixed with
+///   `__atuin_accept__:` when the shell should execute it immediately (per
+///   `enter_accept` config).
+/// * `1`  — the user cancelled (Esc / Ctrl+C / Ctrl+G); `*out` is NULL and
+///   the shell must leave its buffer unchanged.
+/// * `<0` — error (no terminal, database failure, ...); check
+///   `atuin_last_error`.
+///
+/// This call blocks the shell's main thread while the TUI is open, exactly
+/// like launching the official interactive-search process. Raw mode and the
+/// alternate screen are restored before returning, including on panic.
+///
+/// # Safety
+/// `handle` must be a live session pointer or NULL. `query` must be NULL or a
+/// valid NUL-terminated C string. `out` must be NULL or point to a writable
+/// `char *` slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn atuin_search_interactive(
+    handle: *mut SessionHandle,
+    query: *const c_char,
+    out: *mut *mut c_char,
+) -> c_int {
+    ffi_guard!(
+        {
+            if !out.is_null() {
+                unsafe {
+                    *out = ptr::null_mut();
+                }
+            }
+
+            if handle.is_null() || out.is_null() {
+                set_error("atuin_search_interactive: null argument");
+                return -1;
+            }
+            guard_fork!(handle, -1);
+            let h = unsafe { &*handle };
+            let q = if query.is_null() {
+                ""
+            } else {
+                unsafe { CStr::from_ptr(query) }.to_str().unwrap_or("")
+            };
+
+            match crate::tui::interactive_search(&h.session, q) {
+                Ok(Some(selected)) => {
+                    let out_ptr = match into_raw_or_truncate(selected) {
+                        Ok(ptr) => ptr,
+                        Err(()) => {
+                            set_error("selected command could not be encoded as a C string");
+                            return -1;
+                        }
+                    };
+                    unsafe {
+                        *out = out_ptr;
+                    }
+                    0
+                }
+                Ok(None) => 1,
+                Err(e) => {
+                    set_error(&format!("interactive search failed: {e:#}"));
+                    -1
+                }
+            }
+        },
+        -1
+    )
+}
+
+/// Free a string returned by `atuin_history_start`, `atuin_search_prefix` or
+/// `atuin_search_interactive`. NULL is safe (no-op).
 ///
 /// # Safety
 /// `ptr` must be NULL or a pointer previously returned by this library exactly
@@ -473,8 +546,18 @@ pub extern "C" fn atuin_version() -> *const c_char {
 /// error slot. Do NOT free it; copy immediately if the value must outlive the
 /// next FFI call.
 #[unsafe(no_mangle)]
-pub extern "C" fn atuin_last_error() -> *const c_char {
-    last_error_ptr()
+pub unsafe extern "C" fn atuin_last_error(out: *mut *mut c_char) {
+    if out.is_null() {
+        return;
+    }
+    let c_string = LAST_ERROR.lock().ok().and_then(|e| e.clone());
+    // SAFETY: `out` points to a writable `char *` slot.
+    unsafe {
+        *out = match c_string {
+            Some(c_string) => c_string.into_raw(),
+            None => ptr::null_mut(),
+        };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +569,14 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     use std::ptr;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     // The exported functions are `unsafe extern "C"` to make the raw-pointer
     // safety contract explicit. These test-only safe wrappers keep the test
@@ -526,6 +617,14 @@ mod tests {
         out: *mut *mut c_char,
     ) -> c_int {
         unsafe { super::atuin_search_prefix(handle, query, limit, out) }
+    }
+
+    fn search_interactive(
+        handle: *mut SessionHandle,
+        query: *const c_char,
+        out: *mut *mut c_char,
+    ) -> c_int {
+        unsafe { super::atuin_search_interactive(handle, query, out) }
     }
 
     fn free_string(ptr: *mut c_char) {
@@ -578,7 +677,8 @@ mod tests {
     }
 
     fn last_error_as_str() -> Option<String> {
-        let ptr = atuin_last_error();
+        let mut ptr: *mut c_char = ptr::null_mut();
+        unsafe { atuin_last_error(&mut ptr) };
         if ptr.is_null() {
             None
         } else {
@@ -812,6 +912,27 @@ mod tests {
         // free it to avoid leaking test memory.
         free_string(stale);
 
+        session_destroy(session);
+    }
+
+    #[test]
+    fn test_search_interactive_rejects_null_arguments_without_terminal() {
+        // Argument validation happens before any terminal I/O, so this test is
+        // safe even under a TTY: with valid arguments the function would open
+        // the full-screen UI and block.
+        let mut out: *mut c_char = CString::new("stale").unwrap().into_raw();
+        assert!(
+            search_interactive(ptr::null_mut(), ptr::null(), &mut out) < 0,
+            "null handle must be rejected before the TUI starts"
+        );
+        assert!(out.is_null(), "failed call must reset the output slot");
+        free_string(out);
+
+        let (session, _tmp) = create_test_session();
+        assert!(
+            search_interactive(session, ptr::null(), ptr::null_mut()) < 0,
+            "null out pointer must be rejected before the TUI starts"
+        );
         session_destroy(session);
     }
 

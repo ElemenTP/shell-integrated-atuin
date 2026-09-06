@@ -11,4 +11,7 @@
 //! fork guard prevents calls from zsh's forked children (`$()`, `&`, pipelines)
 //! from touching the tokio runtime in its post-fork corrupted state.
 
+mod tui;
+mod tui_input;
+
 pub mod ffi;

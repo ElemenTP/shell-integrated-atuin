@@ -105,6 +105,40 @@ public sealed class AtuinSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Run the in-process full-screen interactive search TUI (the official
+    /// <c>atuin search -i</c> replacement).
+    /// </summary>
+    /// <param name="query">Initial query. Null matches the empty query.</param>
+    /// <returns>The selected command, or null when the user cancelled.
+    /// The returned command may be prefixed with
+    /// <c>__atuin_accept__:</c> when it should be executed immediately.</returns>
+    public string? SearchInteractive(string? query)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        int rc = NativeMethods.SearchInteractive(
+            _handle, query ?? string.Empty, out IntPtr outPtr);
+        if (rc == 1)
+        {
+            return null;
+        }
+        if (rc != 0 || outPtr == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                $"SearchInteractive failed (rc={rc}): {LastError() ?? "unknown error"}");
+        }
+
+        try
+        {
+            return Marshal.PtrToStringUTF8(outPtr);
+        }
+        finally
+        {
+            NativeMethods.FreeString(outPtr);
+        }
+    }
+
     /// <summary>Return the session UUID.</summary>
     public string SessionUuid()
     {

@@ -180,14 +180,15 @@ if (Get-Module PSReadLine -ErrorAction Ignore) {
     Write-Warning "atuin-native: PSReadLine is not loaded; history recording and search keys are disabled."
 }
 
-# ---- Interactive search (native prefix search) ------------------------------
-# The official search spawns the Atuin TUI. This in-process variant returns
-# prefix matches and replaces the command line with the first match.
+# ---- Interactive search (in-process full-screen TUI) ------------------------
+# The official atuin.ps1 launches `atuin search -i` as a child process. This
+# variant calls the same TUI implementation directly inside the pwsh process
+# through the native session, so no external atuin binary is required.
 function Invoke-AtuinSearch {
     <#
     .SYNOPSIS
-        Replaces the current command line with the newest prefix match from
-        Atuin history.
+        Opens the in-process Atuin interactive search TUI and replaces the
+        current command line with the selection.
     #>
     [CmdletBinding()]
     param([string]$ExtraArgs = "")
@@ -198,10 +199,9 @@ function Invoke-AtuinSearch {
     }
 
     $query = Get-AtuinCommandLine
-    if ([string]::IsNullOrEmpty($query)) { return }
 
     try {
-        $results = (Get-AtuinNativeSession).SearchPrefix($query, 20)
+        $selected = (Get-AtuinNativeSession).SearchInteractive($query)
     } catch {
         if (-not $script:NativeWarned) {
             $script:NativeWarned = $true
@@ -210,8 +210,18 @@ function Invoke-AtuinSearch {
         return
     }
 
-    if ($results.Count -eq 0) { return }
-    Set-AtuinCommandLine $results[0]
+    if ($null -eq $selected) {
+        # Esc / Ctrl+C / Ctrl+G: keep the buffer exactly as it was.
+        return
+    }
+
+    $acceptPrefix = "__atuin_accept__:"
+    if ($selected.StartsWith($acceptPrefix, [System.StringComparison]::Ordinal)) {
+        Set-AtuinCommandLine $selected.Substring($acceptPrefix.Length)
+        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+    } else {
+        Set-AtuinCommandLine $selected
+    }
 }
 
 function Enable-AtuinSearchKeys {
@@ -242,6 +252,14 @@ function Enable-AtuinSearchKeys {
             }
         }
     }
+}
+
+# ---- Bind search keys by default, exactly like the original module -----------
+# `atuin init powershell` ends with `Enable-AtuinSearchKeys -CtrlR $true
+# -UpArrow $true`; without this, importing the module defines the handler but
+# Ctrl+R / UpArrow keep their PSReadLine defaults and never reach the TUI.
+if (Get-Module PSReadLine -ErrorAction Ignore) {
+    Enable-AtuinSearchKeys -CtrlR $true -UpArrow $true
 }
 
 # ---- Export the public API ---------------------------------------------------

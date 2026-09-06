@@ -102,6 +102,15 @@ internal static unsafe partial class NativeMethods
     internal static partial int SearchPrefix(
         IntPtr session, string? query, int limit, out IntPtr @out);
 
+    /// <summary>
+    /// Interactive full-screen search TUI. Return 0 = selected (free the
+    /// output with <see cref="FreeString"/>), 1 = cancelled, negative = error.
+    /// Blocks until the user selects a command or cancels.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_search_interactive", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int SearchInteractive(
+        IntPtr session, string? query, out IntPtr @out);
+
     // ── Memory management ──────────────────────────────────────────────
 
     /// <summary>Free a string returned by history_start or search_prefix. NULL-safe.</summary>

@@ -10,12 +10,18 @@ name = "atuin_ffi"
 crate-type = ["cdylib"]
 
 [dependencies]
-atuin-client = { path = "../atuin/crates/atuin-client", default-features = false, features = ["daemon", "in-process"] }
+atuin-client = { path = "../atuin/crates/atuin-client", default-features = false, features = ["in-process"] }
 atuin-common = { path = "../atuin/crates/atuin-common" }
+eyre = "0.6"
 libc = "0.2"
+ratatui = "0.30"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_Foundation"] }
 
 [dev-dependencies]
 tempfile = "3"
+time = "0.3"
 
 [profile.release]
 opt-level = 3

@@ -32,6 +32,7 @@ static int (*fn_history_start)(atuin_session_t *, const char *, const char *,
 static int (*fn_history_end)(atuin_session_t *, const char *, int64_t, int64_t,
                              int);
 static int (*fn_search_prefix)(atuin_session_t *, const char *, int, char **);
+static int (*fn_search_interactive)(atuin_session_t *, const char *, char **);
 static void (*fn_free_string)(char *);
 static const char *(*fn_session_uuid)(atuin_session_t *);
 static const char *(*fn_version)(void);
@@ -69,6 +70,7 @@ static int load_library(const char *path) {
   L(history_start);
   L(history_end);
   L(search_prefix);
+  L(search_interactive);
   L(free_string);
   L(session_uuid);
   L(version);
@@ -193,7 +195,21 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* 8. NULL arguments are rejected and output slots reset */
+  /* 8. interactive search symbol exists; argument validation must happen
+     * BEFORE any terminal I/O (with valid arguments this would open the TUI
+     * and block waiting for keys). */
+  TEST("search_interactive NULL-safety");
+  {
+    char *stale = strdup("stale");
+    int rc = fn_search_interactive(NULL, NULL, &stale);
+    if (rc < 0 && stale == NULL)
+      PASS();
+    else
+      FAIL("null handle was not rejected before the TUI started");
+    free(stale);
+  }
+
+  /* 9. NULL arguments are rejected and output slots reset */
   TEST("NULL argument handling");
   {
     atuin_session_t *s = create_session();

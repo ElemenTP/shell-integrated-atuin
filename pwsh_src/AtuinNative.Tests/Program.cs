@@ -106,6 +106,7 @@ try
     disposed.Dispose(); // must be idempotent
     Check(true, "double Dispose is safe");
     Throws<ObjectDisposedException>(() => disposed.SearchPrefix("echo", 1), "SearchPrefix after Dispose throws");
+    Throws<ObjectDisposedException>(() => disposed.SearchInteractive("echo"), "SearchInteractive after Dispose throws");
 
     // ── Multiple independent sessions ───────────────────────────────────
     for (int i = 0; i < 3; i++)

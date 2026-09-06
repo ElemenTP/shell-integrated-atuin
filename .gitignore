@@ -151,3 +151,12 @@ prefix
 
 # Local zsh history (accidentally created by interactive testing)
 .zsh_history
+
+# Atuin data files accidentally created in the repo root by smoke tests
+history.db
+history.db-shm
+history.db-wal
+records.db
+records.db-shm
+records.db-wal
+key
