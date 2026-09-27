@@ -23,46 +23,24 @@ public static partial class AtuinEnvironment
     /// </summary>
     public static void Set(string name, string value)
     {
-        ArgumentNullException.ThrowIfNull(name);
-        ArgumentNullException.ThrowIfNull(value);
-
         // 1. .NET environment (for subprocess compatibility, $env: reads, etc.)
-        Environment.SetEnvironmentVariable(name, value);
+        System.Environment.SetEnvironmentVariable(name, value);
 
         // 2. Native OS environment (for in-process getenv() / std::env::var())
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            _ = SetEnv(name, value, 1);
+            SetEnv(name, value, 1);
         }
-    }
-
-    /// <summary>
-    /// Read an environment variable. On Unix the native block is authoritative
-    /// for in-process native code; the managed block is used on Windows.
-    /// </summary>
-    public static string? Get(string name)
-    {
-        ArgumentNullException.ThrowIfNull(name);
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return Environment.GetEnvironmentVariable(name);
-        }
-
-        IntPtr ptr = GetEnv(name);
-        return ptr == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(ptr);
     }
 
     /// <summary>Remove an environment variable from both blocks.</summary>
     public static void Remove(string name)
     {
-        ArgumentNullException.ThrowIfNull(name);
-
-        Environment.SetEnvironmentVariable(name, null);
+        System.Environment.SetEnvironmentVariable(name, null);
 
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            _ = UnsetEnv(name);
+            UnsetEnv(name);
         }
     }
 
@@ -73,7 +51,4 @@ public static partial class AtuinEnvironment
 
     [LibraryImport(LibC, EntryPoint = "unsetenv", StringMarshalling = StringMarshalling.Utf8)]
     private static partial int UnsetEnv(string name);
-
-    [LibraryImport(LibC, EntryPoint = "getenv", StringMarshalling = StringMarshalling.Utf8)]
-    private static partial IntPtr GetEnv(string name);
 }

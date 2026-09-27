@@ -204,8 +204,7 @@ if(BUILD_ZSH_MODULE)
     set(ZSH_MODULE_NAME "atuin_native")
 
     add_library(${ZSH_MODULE_NAME} SHARED
-        "${CMAKE_SOURCE_DIR}/zsh_src/atuin_module.c"
-        "${CMAKE_SOURCE_DIR}/zsh_src/atuin_builtin_util.c"
+        "${CMAKE_SOURCE_DIR}/zsh_src/module.c"
     )
 
     target_include_directories(${ZSH_MODULE_NAME} PRIVATE
@@ -333,14 +332,6 @@ if(BUILD_TESTS)
         COMMAND ffi_smoke "${FFI_SHARED}"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
-
-    # Pure C unit tests for the zsh builtin argument helpers.
-    add_executable(zsh_module_unit
-        "${CMAKE_SOURCE_DIR}/tests/test_zsh_module_unit.c"
-        "${CMAKE_SOURCE_DIR}/zsh_src/atuin_builtin_util.c"
-    )
-    target_include_directories(zsh_module_unit PRIVATE "${CMAKE_SOURCE_DIR}/zsh_src")
-    add_test(NAME zsh_module_unit COMMAND zsh_module_unit)
 
     add_custom_target(test-rust
         COMMAND ${CARGO} test ${CARGO_RELEASE_FLAG} -- --test-threads=1
@@ -473,7 +464,7 @@ if(BUILD_TESTS)
 
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -C "$<CONFIG>"
-        DEPENDS ffi_smoke zsh_module_unit
+        DEPENDS ffi_smoke
     )
 
     set(_check_all_deps check test-rust)

@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 atuin = { path = "../atuin/crates/atuin", default-features = false, features = ["client", "in-process"] }
+atuin-client = { path = "../atuin/crates/atuin-client", default-features = false, features = ["in-process"] }
 eyre = "0.6"
 libc = "0.2"
 

@@ -21,6 +21,13 @@ echo "Module dir: $MODULE_DIR"
 
 mkdir -p "$ATUIN_DATA_DIR"
 export ATUIN_DATA_DIR
+
+# atuin_init takes no data-dir argument any more: the session
+# resolves its paths from the settings tree. Pin data_dir in an isolated
+# config.toml so the tests never touch the real ~/.config/atuin.
+export ATUIN_CONFIG_DIR="$ATUIN_DATA_DIR/config"
+mkdir -p "$ATUIN_CONFIG_DIR"
+printf 'data_dir = "%s"\n' "$ATUIN_DATA_DIR" > "$ATUIN_CONFIG_DIR/config.toml"
 export ATUIN_NATIVE_DIR="$MODULE_DIR"
 export ATUIN_SESSION=""
 
@@ -33,8 +40,24 @@ source "$PLUGIN"
     || { echo "FAIL: plugin did not set _ATUIN_NATIVE_LOADED"; exit 1; }
 [[ -n "${ATUIN_SESSION:-}" ]] && echo "PASS: session id exported" \
     || { echo "FAIL: ATUIN_SESSION not exported"; exit 1; }
-[[ "${+functions[_zsh_autosuggest_strategy_atuin_native]}" == 1 ]] && echo "PASS: autosuggest strategy installed" \
+# zsh-autosuggestions parity: the official `atuin` strategy name must be
+# installed and prepended to the strategy list, exactly like atuin.zsh.
+[[ "${+functions[_zsh_autosuggest_strategy_atuin]}" == 1 ]] && echo "PASS: autosuggest strategy installed" \
     || { echo "FAIL: autosuggest strategy missing"; exit 1; }
+[[ "${+functions[_zsh_autosuggest_strategy_atuin_native]}" == 1 ]] && echo "PASS: autosuggest alias installed" \
+    || { echo "FAIL: autosuggest alias missing"; exit 1; }
+[[ "${ZSH_AUTOSUGGEST_STRATEGY[1]}" == "atuin" ]] && echo "PASS: autosuggest strategy prepended" \
+    || { echo "FAIL: ZSH_AUTOSUGGEST_STRATEGY=${ZSH_AUTOSUGGEST_STRATEGY[*]}"; exit 1; }
+
+# Sourcing before zsh-autosuggestions (variable unset) must still configure it.
+autosuggest_default=$(env -u ZSH_AUTOSUGGEST_STRATEGY \
+    ATUIN_NATIVE_DIR="$ATUIN_NATIVE_DIR" \
+    ATUIN_DATA_DIR="$ATUIN_DATA_DIR" \
+    ATUIN_CONFIG_DIR="$ATUIN_CONFIG_DIR" \
+    zsh -c "source '$PLUGIN'; print -r -- \"\${ZSH_AUTOSUGGEST_STRATEGY[*]}\"")
+[[ "$autosuggest_default" == "atuin" ]] \
+    && echo "PASS: autosuggest configured before zsh-autosuggestions loads" \
+    || { echo "FAIL: unset strategy produced '$autosuggest_default'"; exit 1; }
 
 # A second source must be a no-op.
 typeset -g _ATUIN_NATIVE_LOADED=1
@@ -54,14 +77,16 @@ _atuin_native_precmd
 
 # The started entry is already searchable before the async end completes.
 ATUIN_SEARCH_RESULT=""
-atuin_search "echo plugin-hook-test" 1 >/dev/null
+ATUIN_SEARCH_QUERY="echo plugin-hook-test"
+ATUIN_SEARCH_LIMIT=1
+atuin_search >/dev/null
 [[ "${ATUIN_SEARCH_RESULT:-}" == *"echo plugin-hook-test"* ]] \
     && echo "PASS: native search finds hook-recorded command" \
     || { echo "FAIL: native search missed hook-recorded command"; exit 1; }
 
 # Autosuggest strategy contract: sets global $suggestion without forking.
 suggestion=""
-_zsh_autosuggest_strategy_atuin_native "echo plugin-hook-test"
+_zsh_autosuggest_strategy_atuin "echo plugin-hook-test"
 [[ "${suggestion:-}" == *"echo plugin-hook-test"* ]] \
     && echo "PASS: autosuggest strategy sets suggestion" \
     || { echo "FAIL: autosuggest strategy returned no suggestion"; exit 1; }

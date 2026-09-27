@@ -3,7 +3,7 @@
 #
 # Verifies that repeated zmodload -u / zmodload cycles do not crash, leak
 # threads, or leave corrupted state. Each cycle exercises the tokio runtime
-# shutdown path (cleanup_ -> atuin_session_destroy -> Session::drop).
+# shutdown path (cleanup_ -> atuin_shutdown -> Session::drop).
 #
 # Usage:
 #   MODULE_DIR=/path/to/zsh_src/build zsh tests/test_unload_zsh.sh
@@ -20,6 +20,13 @@ echo "Cycles: $CYCLES"
 
 mkdir -p "$ATUIN_DATA_DIR"
 export ATUIN_DATA_DIR
+
+# atuin_init takes no data-dir argument any more: the session
+# resolves its paths from the settings tree. Pin data_dir in an isolated
+# config.toml so the tests never touch the real ~/.config/atuin.
+export ATUIN_CONFIG_DIR="$ATUIN_DATA_DIR/config"
+mkdir -p "$ATUIN_CONFIG_DIR"
+printf 'data_dir = "%s"\n' "$ATUIN_DATA_DIR" > "$ATUIN_CONFIG_DIR/config.toml"
 module_path=("$MODULE_DIR" $module_path)
 
 baseline_threads=0
@@ -33,12 +40,18 @@ for ((i=1; i<=CYCLES; i++)); do
     zmodload atuin_native || { echo "FAIL: load cycle $i"; exit 1; }
 
     ATUIN_HISTORY_ID=""
-    atuin_history_start "echo unload-cycle-$i" "/tmp" >/dev/null 2>&1
+    ATUIN_HISTORY_COMMAND="echo unload-cycle-$i"
+    ATUIN_HISTORY_CWD="/tmp"
+    atuin_history_start >/dev/null 2>&1
     id="${ATUIN_HISTORY_ID:-}"
     [[ -n "$id" ]] || { echo "FAIL: start cycle $i"; exit 1; }
     # Exercise the real precmd path (fire-and-forget, not --sync) so tokio and
     # sqlx spawn their worker threads.
-    atuin_history_end "$id" 0 0 2>/dev/null
+    ATUIN_HISTORY_ID="$id"
+    ATUIN_HISTORY_EXIT=0
+    ATUIN_HISTORY_DURATION_NS=0
+    ATUIN_HISTORY_SYNC=0
+    atuin_history_end 2>/dev/null
     sleep 0.1
 
     if [[ -d /proc/$$/task && i -eq 1 ]]; then

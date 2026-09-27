@@ -23,25 +23,34 @@ fire-and-forget。多线程 runtime 的 worker 会在 builtin 返回后立即消
 
 对“worker 线程污染 zsh 主线程 / 难以卸载”的应对：
 
-1. **不保留全局 TLS**：FFI crate 不使用 `thread_local!`；错误槽是全局 `Mutex`
+1. **不保留全局 TLS，也不保留全局错误槽**：FFI crate 不使用 `thread_local!`，
+   错误直接作为返回值（`char *`，NULL = 成功）返回给调用方
 2. **fork guard**：`$()`、`&`、管道等 fork 子进程在触碰 runtime 前被拒绝
-3. **显式 shutdown**：`Session::drop` 调用 `shutdown_timeout(10s)`，
-   等待 worker 退出和在途 history_end 完成后才允许 `dlclose`
+3. **显式 shutdown**：`Session::drop` 在 Session 自己的 tokio runtime 内
+   等待在途 history_end 计数归零，再关闭 SQLite pool，最后才 `shutdown_timeout(10s)`
 4. **线程数受控**：`worker_threads(8)`，一个 shell 只常驻少量 worker
 
-`shutdown_timeout` 的调用链：
+`Session::drop` 的调用链：
 
 ```text
 zmodload -u / Remove-Module
   → cleanup_ / OnRemove
-  → atuin_session_destroy
+  → atuin_shutdown
   → Session::drop
-  → Runtime::shutdown_timeout(10s)     # 等待在途任务 + tokio worker
-  → history.db pool close              # 等待 sqlx worker
-  → records.db pool close              # 等待 sqlx worker
-  → Settings::close_meta_store()       # 等待 meta.db 的 sqlx worker
+  → runtime.block_on:
+       等待 in-flight history_end 计数器归零（不保存 JoinHandle 列表）
+       history.db pool close           # 等待 sqlx worker
+       records.db pool close           # 等待 sqlx worker
+       Settings::close_meta_store()    # 等待 meta.db 的 sqlx worker
+  → Runtime::shutdown_timeout(10s)     # 等待 tokio worker 退出
   → dlclose
 ```
+
+这里刻意**不再使用 `futures::executor::block_on`**：关闭数据库的动作全部在
+Session 自己的 tokio runtime 内完成，避免为卸载路径引入额外 executor /
+thread-local 状态。同时使用 `AtomicUsize + tokio::sync::Notify` 只记录在途
+`history_end_async` 数量，而不是保存每个 `JoinHandle`，避免长生命周期 shell
+中 `pending` 集合无限增长。
 
 sqlx SQLite 连接不是 tokio task，而是自己的 `sqlx-sqlite-worker-*` 线程。
 仅关闭 tokio runtime 后 zsh 仍会残留 3 个 sqlx 线程（history / records /
@@ -53,7 +62,7 @@ meta store 由 `Settings` 的进程级 `OnceCell` 持有，无法原地重建；
 
 ### 1.2 Settings::new 与 meta store 的隐式依赖
 
-`Session::new` 最初使用：
+`Session` 最初使用：
 
 ```rust
 Settings::builder()?.build()?.try_deserialize()?
@@ -65,9 +74,42 @@ Settings::builder()?.build()?.try_deserialize()?
 
 正确写法是直接调用 `Settings::new()?`，它内部执行同样的配置解析并注册 meta store。
 
-`Session::new` 的 data-dir 参数是 `Option<&Path>`：`Some` 使用调用方显式传入的目录
-（`ATUIN_DATA_DIR`），`None` 使用 `settings.db_path` / `record_store_path` /
-`key_path`，这样 config.toml 中的 `data_dir` 也能生效。
+`Session::new()` 不接受 data-dir 参数，完全依赖 `Settings::new()` 解析出的
+`settings.db_path` / `record_store_path` / `key_path`，因此 `ATUIN_DATA_DIR`、
+XDG 与 config.toml 中的 `data_dir` 都按官方优先级生效，FFI 也无法覆盖它。
+底层 `Session::new_with_datadir(Option<&Path>)` 保留下来：FFI 内的私有辅助函数
+`atuin_init_with_datadir` 在测试里显式传目录，让每个单元测试拥有独立
+数据目录；导出符号 `atuin_init` 只是以 `NULL` 调用它，所以 shell 侧
+始终跟随配置。
+
+因为 `DATA_DIR` / `META_CONFIG` / `META_STORE` 都是进程级全局状态，FFI 只维护
+**一个进程级 session**（`static SESSION: Mutex<Option<SessionHandle>>`，命名与
+starship wrapper 的 `ssp_init` / `ssp_shutdown` 对齐）：`atuin_init` 幂等
+（已有 session 时成功且保留原 session）、`atuin_shutdown` 幂等、其余导出在无
+session 时报 `session is not initialized`。`SESSION_PID` 原子变量放在锁之外，
+fork 子进程无需先拿锁即可被拒绝。
+所有调用由同一把锁串行化；`history_end(sync=0)` 的 spawned future 只捕获克隆的
+Arc，因此调用返回即释放锁，而 `search_interactive` 在 TUI 期间持锁（等价官方
+前台进程）。这也是为什么之前为多 session 加的 `LIVE_SESSIONS` 计数被移除：
+单 session 下 `Drop` 可以无条件关闭 meta store。
+
+### 1.2.1 shutdown → init 与进程级静态变量
+
+单 session 允许 `atuin_shutdown()` 后重新 `atuin_init()`。为避免第二次 init 复用到上一次进程状态，
+`Session::Drop` 调用 `Settings::shutdown_process_state()`：
+
+- `close_meta_store()` 关闭 meta.db 的 sqlx worker 并把全局槽置空，下一次
+  `meta_store()` 重新打开连接池；
+- `DATA_DIR` / `META_CONFIG` 从 `OnceLock` 改为可清空的 `RwLock<Option<_>>`
+  （写入仍是“首次生效”，保持 CLI 行为），清空后下一次 `Settings::new()` 会按新的
+  `ATUIN_DATA_DIR` / config.toml 重新解析。否则 history.db/records.db 用新目录、
+  meta.db 却留在旧目录，形成分裂状态；
+- `reset_tui_input()` 释放 `in_process_event` 里缓存 `/dev/tty` 的 `OnceLock`，
+  避免上一个 session 的 fd 与残留输入泄漏到下一个 session 或 `dlclose` 之后。
+
+其余静态变量（`theme` / `history::all_user_author_filter` 的 `LazyLock`、
+`atuin_domain::ATUIN_VERSION`、`DEFAULT_*_URL`）都是不可变缓存，destroy→create 无影响；
+`settings/watcher.rs::SETTINGS_WATCHER` 只被 daemon 使用，不在本集成路径。
 
 ### 1.3 history_end 的本地记录链
 
@@ -98,7 +140,7 @@ Rust 2024 edition 中 `#[no_mangle]` 是 unsafe attribute：
 
 ```rust
 #[unsafe(no_mangle)]
-pub extern "C" fn atuin_session_create(...) -> ... { ... }
+pub extern "C" fn atuin_init() -> *mut c_char { ... }
 ```
 
 ### 2.2 fork guard
@@ -114,10 +156,10 @@ zsh 以下场景会 `fork()` 且不 exec：
 | `atuin_history_start ... > file` | ❌ 不 fork | 放行 |
 | `cat \| atuin_history_start ...` | ❌ 不 fork（末位） | 放行 |
 
-实现方式是在 `SessionHandle` 记录创建时的 PID：
+实现方式是在进程级 session 状态里记录创建时的 PID：
 
 ```rust
-pub struct SessionHandle {
+struct SessionHandle {
     session: Session,
     creator_pid: u32,
     uuid: CString,
@@ -125,7 +167,7 @@ pub struct SessionHandle {
 ```
 
 所有会触碰 tokio runtime 的入口先比较 `std::process::id()`。
-`atuin_session_destroy` 同样带 guard：fork 子进程不会 drop 父进程的 Box（泄漏由 `_exit` 回收）。
+`atuin_shutdown` 同样带 guard：fork 子进程不会 drop 父进程的 session。
 
 ### 2.3 输出指针先置 NULL
 
@@ -141,31 +183,86 @@ if !id_out.is_null() {
 ### 2.4 session UUID 不分配
 
 最初 `atuin_session_uuid` 每次调用 `CString::new(...).unwrap().into_raw()`，
-每次查询泄漏一个 CString。现在 UUID 在 session 创建时缓存到 `SessionHandle.uuid`：
+每次查询泄漏一个 CString。现在 UUID 在 session 创建时缓存到 `SessionHandle.uuid`，
+调用方通过 out 参数拿到 session 持有的指针：
 
 ```rust
-const char *atuin_session_uuid(atuin_session_t *s) {
+char *atuin_session_uuid(const char **out) {
     ...
-    return h.uuid.as_ptr();
+    unsafe { *out = state.uuid.as_ptr(); }
+    ptr::null_mut() // 成功
 }
 ```
 
 返回指针由 session 持有，文档明确“不可释放”。
 
-### 2.5 错误槽使用全局 Mutex 而不是 TLS
+### 2.5 错误直接作为返回值，不使用全局错误槽
 
-原因与 starship-native 相同：TLS 析构器会注册在宿主线程，
-macOS/Windows 在 `dlclose` 后可能调用悬挂析构器。全局 `Mutex<Option<CString>>`
-没有每线程状态，FFI 调用又被 shell 单线程串行化，无实际争用。
+FFI 不再维护 `Mutex<Option<CString>>` 或 `atuin_last_error`。每个可能失败的导出
+都返回 `char *`：
+
+- `NULL` = 成功；
+- 非 NULL = Rust 分配的 UTF-8 错误信息，调用方用 `atuin_free` 释放。
+
+辅助函数集中在 `ffi.rs` 开头（与 starship-native 风格一致）：
+`string_into_c`、`error_string`、`panic_to_error`，以及把 panic 转成错误字符串的
+`ffi_guard_error!`。这样每个调用自带错误值，没有共享可变状态，也就没有
+TLS/全局析构器在 `dlclose` 后悬挂的问题；`with_session!` 宏把“取锁 → 取活动
+session → fork 检查”集中在一处，锁中毒通过 `into_inner()` 恢复。
 
 ### 2.6 search 结果中的 NUL
 
 命令历史是用户输入，可能包含任意字节（NUL 除外，因为 shell argv 是 C string）。
 拼接结果时用 `CString::new` 失败则截断到第一个 NUL，而不是让整个搜索失败。
 
+### 2.6.1 统一的 `Session::search` 与 C ABI
+
+`Session::search(SearchOptions)` 是唯一的搜索入口，内部按 `SearchMode` 分派，
+对齐上游 `atuin search` 的 `Cmd::run`：
+
+- `SearchMode::NonInteractive`：走上游 query engine，返回
+  `SearchResult::Entries(Vec<History>)`；
+- `SearchMode::Interactive`：打开上游完整 TUI，返回
+  `SearchResult::Interactive(Option<String>)`（`None` = 用户取消）。
+
+`search_mode`/`filter_mode`/`shell_up_key_binding`/`keymap_mode` 会像 CLI 一样
+先覆盖到 settings 副本，再进入对应分支；limit/cwd/authors 等非交互字段在
+interactive 模式下被忽略。
+
+C FFI 侧仍通过 `atuin_search_options_t` 传入非交互选项；`atuin_search` 只接受
+`SearchResult::Entries`。`atuin_search_prefix` 对应 `search_prefix` 快速路径
+（等价于 `search-mode=prefix + author=$all-user + limit=N`），zsh 的
+`atuin_search_prefix` builtin 与 autosuggest strategy 直接使用它，不再绕通用
+`atuin_search` + 参数拼装。
+
+`atuin_search_interactive` 增加了 `shell_up_key_binding` / `keymap_mode` 两个参数
+（`ATUIN_KEYMAP_MODE_*`），按参数选择最具体的快速路径：
+
+| 条件 | 调用的 Session 方法 | 对应官方用法 |
+| --- | --- | --- |
+| `keymap_mode != auto` | `search_interactive_with` | vi widget：`atuin search -i --keymap-mode=vim-normal/vim-insert` |
+| 仅 `shell_up_key_binding` | `search_interactive_up` | UpArrow：`atuin search -i --shell-up-key-binding` |
+| 都没有 | `search_interactive` | Ctrl+R：`atuin search -i` |
+| （非交互）`atuin_search_prefix` | `search_prefix(query, limit)` | autosuggest：`--cmd-only --author '$all-user' --limit N --search-mode prefix` |
+
+zsh 侧由 `ATUIN_SEARCH_SHELL_UP_KEY_BINDING` / `ATUIN_SEARCH_KEYMAP_MODE` 参数传入，
+插件里 UpArrow widget 设前者、vi widget 设后者；pwsh 侧由
+`Invoke-AtuinSearch -ExtraArgs` 解析 `--shell-up-key-binding` / `--keymap-mode=`。
+
+### 2.6.2 会话统计（`atuin_stats`，对齐 starship_stats）
+
+`Session` 内新增 `SessionStatsCounters`（`AtomicU64`）与 `created_at`，在
+`history_start` / `history_end`(sync+async) / `search` / `search_prefix` /
+`search_interactive_tui` 的关键点自增，`Session::stats()` 汇总为 `SessionStats`
+快照（含 `in_flight_history_ends` 与 uptime）。FFI 导出 `atuin_stats(atuin_stats_t*)`
+填充 C struct；zsh builtin `atuin_stats` 写 `ATUIN_STATS_*` 参数并（除非
+`ATUIN_STATS_QUIET`）打印摘要，`ATUIN_STATS_VERBOSE` 追加 interactive 明细；
+C# 侧 `AtuinSession.GetStats()` / `GetStatsReport()`，psm1 提供
+`Get-AtuinNativeStats`。因为计数器属于 session，destroy→create 后从零开始。
+
 ### 2.7 进程内交互式 TUI（`atuin_search_interactive`）
 
-TUI 本身**不是重新实现**：`Session::interactive_search` 直接调用上游
+TUI 本身**不是重新实现**：`Session::search` 的 interactive 分支直接调用上游
 `command::client::search::interactive::history()`，因此官方 TUI 的
 tabs/inspector/预览、keymap、filter/search mode 循环等全部同步继承。
 
@@ -178,8 +275,21 @@ tabs/inspector/预览、keymap、filter/search mode 循环等全部同步继承�
   `crossterm::event` 会懒加载注册 SIGWINCH signal-hook，注册后永不注销。
   独立二进制无所谓，但在 `dlclose` 场景会留下指向已卸载代码的信号处理器，
   窗口一变尺寸就段错误。`in_process_event.rs` 只提供 `poll/read` 两个函数，
-  内部自管 `/dev/tty` + `poll(2)` + 字节级 CSI/UTF-8 解析，并把按键翻译成
-  crossterm `KeyEvent` 后交给上游状态机；窗口尺寸变化靠上游循环周期重绘感知。
+  内部自管 `/dev/tty` + `poll(2)` + 字节级 CSI/UTF-8 解析，并把解析结果翻译成
+  crossterm `Event` 后交给上游状态机；窗口尺寸变化靠上游循环周期重绘感知。
+  解析范围与上游 TUI 启用的终端模式一致：
+  - 按键（含 CSI/SS3 光标键、UTF-8）；
+  - CSI-u / Kitty keyboard protocol (`ESC [ codepoint ; modifiers u`)：上游会
+    push keyboard enhancement flags，支持该协议的终端（kitty/wezterm/foot 等）
+    会用 CSI-u 上报所有按键，解析器将其归一化为与 legacy 字节相同的内部按键；
+  - SGR (`ESC [ < ... M/m`) 与 X10 (`ESC [ M ...`) 鼠标报告。上游会开启
+    any-event mouse tracking，因此**必须**消费鼠标移动事件；否则它们会被
+    误判为 `Esc` 直接取消 TUI。滚轮事件映射为 `ScrollUp`/`ScrollDown`，
+    与上游 `handle_mouse_input` 的选择行为对接；
+  - 括号粘贴 (`ESC [ 200 ~ ... ESC [ 201 ~`)：上游把它作为 `Event::Paste`
+    插入查询而不是逐键执行，因此解析器会跨多次 read 收集完整 payload；
+  - 完整但无法识别的 CSI 序列映射为 `KeyCode::Null`（上游忽略），避免未知
+    终端报告意外触发 Esc 取消。
 - Windows 上 `crossterm::event` 只做 `WaitForMultipleObjects` /
   `ReadConsoleInputW`，无回调无线程，所以仍直接走 crossterm 事件源。
 
@@ -203,30 +313,63 @@ Rust 返回的是 raw UTF-8。写入 zsh 参数前必须 metafy，否则非 ASCI
 会在 zsh 内部表示往返时损坏：
 
 ```c
-static void set_str_param(const char *name, char *val) {
-    if (!val) return;
-    setsparam((char *)name, metafy((char *)val, strlen(val), META_DUP));
+static void set_str_param(const char *name, const char *val) {
+    setsparam((char *)name, ztrdup_metafy(val ? val : ""));
 }
 ```
 
-### 3.3 参数协议避免命令替换
+### 3.3 零参数 builtin：用 zsh 变量交换输入输出
 
-官方 hook 用 `id=$(atuin history start ...)`。在本方案中这个写法必然触发 fork guard。
-因此 `atuin_history_start` 同时写入 `$ATUIN_HISTORY_ID`，插件只重定向 stdout：
+`module.c` 与 starship/zoxide 的 native 模块保持一致：builtin 不接收
+argv，所有输入来自 zsh 参数，所有结果写回 zsh 参数。C 代码不再自行解析
+`--search-mode`/`--sync`/limit 等参数，复杂 argv 解析由调用侧（zsh 脚本）
+用变量表达：
 
 ```zsh
+# history start
+ATUIN_HISTORY_COMMAND="$1"
+ATUIN_HISTORY_CWD="$PWD"
 ATUIN_HISTORY_ID=""
-atuin_history_start "$1" "$PWD" >/dev/null 2>&1
+atuin_history_start >/dev/null 2>&1
 export ATUIN_HISTORY_ID="${ATUIN_HISTORY_ID:-}"
+
+# history end（默认 fire-and-forget；调试时设 ATUIN_HISTORY_SYNC=1）
+ATUIN_HISTORY_EXIT="$EXIT"
+ATUIN_HISTORY_DURATION_NS="${duration:-0}"
+ATUIN_HISTORY_SYNC=0
+atuin_history_end
 ```
 
-`atuin_search` 同样写入 `$ATUIN_SEARCH_RESULT`，供 autosuggest strategy 使用。
+完整协议：
 
-### 3.4 纯参数解析 helper 独立成文件
+| Builtin | 输入参数 | 输出参数 |
+| --- | --- | --- |
+| `atuin_history_start` | `ATUIN_HISTORY_COMMAND`, `ATUIN_HISTORY_CWD`, `ATUIN_HISTORY_AUTHOR`, `ATUIN_HISTORY_AUTHOR_KIND`, `ATUIN_HISTORY_INTENT` | `ATUIN_HISTORY_ID` |
+| `atuin_history_end` | `ATUIN_HISTORY_ID`, `ATUIN_HISTORY_EXIT`, `ATUIN_HISTORY_DURATION_NS`, `ATUIN_HISTORY_SYNC` | — |
+| `atuin_search` | `ATUIN_SEARCH_QUERY`, `ATUIN_SEARCH_MODE`, `ATUIN_SEARCH_FILTER_MODE`, `ATUIN_SEARCH_CWD`, `ATUIN_SEARCH_EXCLUDE_CWD`, `ATUIN_SEARCH_EXITS`, `ATUIN_SEARCH_EXCLUDE_EXITS`, `ATUIN_SEARCH_BEFORE`, `ATUIN_SEARCH_AFTER`, `ATUIN_SEARCH_LIMIT`, `ATUIN_SEARCH_OFFSET`, `ATUIN_SEARCH_REVERSE`, `ATUIN_SEARCH_INCLUDE_DUPLICATES`, `ATUIN_SEARCH_AUTHORS`, `ATUIN_SEARCH_SHELLS` | `ATUIN_SEARCH_RESULT` |
+| `atuin_search_interactive` | `ATUIN_SEARCH_QUERY` | `ATUIN_SEARCH_SELECTED` |
 
-`atuin_module.c` 依赖 zsh 内部头文件，无法被普通 C 编译器链接。
-因此 duration/limit/exit 解析放在 `atuin_builtin_util.{h,c}`，
-模块与 `tests/test_zsh_module_unit.c` 共同编译它。
+`ATUIN_SEARCH_MODE` / `ATUIN_SEARCH_FILTER_MODE` 使用与 CLI 相同的字符串
+（`prefix`、`fuzzy`、`global`、`session` 等）；`ATUIN_SEARCH_AUTHORS` /
+`ATUIN_SEARCH_SHELLS` / `ATUIN_SEARCH_EXITS` / `ATUIN_SEARCH_EXCLUDE_EXITS` 是
+zsh 数组，分别对应上游可重复的 `--author` / `--shell` / `--exit` /
+`--exclude-exit`。`ATUIN_HISTORY_AUTHOR_KIND` 取 `user`/`agent`
+（大小写不敏感），对应 `atuin history start --author-kind`。这样官方 autosuggest 的
+`--author '$all-user' --search-mode prefix` 在 zsh 侧就是：
+
+```zsh
+ATUIN_SEARCH_QUERY="$1"
+ATUIN_SEARCH_LIMIT=1
+ATUIN_SEARCH_MODE=prefix
+ATUIN_SEARCH_AUTHORS=('$all-user')
+atuin_search
+```
+
+### 3.4 C shim 保持极薄
+
+由于不再解析参数，`module.c` 只需要读取 zsh 参数、构造 C ABI 结构、
+调用 FFI、把返回字符串写回 zsh 参数。原来的 `atuin_builtin_util.{h,c}` 和
+`test_zsh_module_unit.c` 已删除，CMake 不再构建独立的 C 参数解析单元测试。
 
 ### 3.5 preexec 计时必须在 start 之前打点
 
@@ -240,6 +383,30 @@ preexec 的最后一条命令如果是 `[[ cond ]] || return`，在 cond 为假�
 失败状态带回 hook，`set -e` 的脚本会因此提前退出。测试和 hook 函数都要以
 显式 `return 0` 收尾。
 
+### 3.7 与官方 `atuin init zsh` / `atuin init powershell` 的差异
+
+插件与官方脚本行为一致的部分：
+
+- zsh-autosuggestions：**无条件**定义 `_zsh_autosuggest_strategy_atuin`（官方
+  同名），并把 `"atuin"` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`（变量未设置时直接
+  设为 `("atuin")`）。因此插件在 zsh-autosuggestions 之前或之后 source 都生效；
+  `_zsh_autosuggest_strategy_atuin_native` 仅作为旧配置的别名保留。旧实现只在
+  `ZSH_AUTOSUGGEST_STRATEGY` 已存在时安装并只用 `atuin_native` 名字，属于
+  与官方不一致的缺陷。
+- OSC 133 使用官方同款 `__atuin_pty_proxy_owns_tty` 契约，`133;D` 格式与官方
+  一致（`history_id=`，不再附带自定义的 `session_id=`）。
+- 键位绑定尊重 `ATUIN_NOBIND`；pwsh 退出 TUI 后调用 `InvokePrompt` 并遵循
+  `ATUIN_POWERSHELL_PROMPT_OFFSET`（未设置时按 prompt 行数推导）。
+
+进程内无法提供、有意不做的官方功能（都需要外部 `atuin` 二进制 / daemon）：
+
+- tmux popup 搜索（插件 `export ATUIN_TMUX_POPUP=false`，TUI 直接在当前终端绘制）；
+- `atuin ai inline` 自然语言模式（`?` widget）；
+- `atuin __internal prepare-search-index`（进程内 prefix search 直接查 SQLite）；
+- PTY proxy 存活性探测以 `ATUIN_PTY_PROXY_ACTIVE` 近似：官方会再请求
+  `atuin __internal pty-proxy-active` 确认 socket 存活，插件无法启动外部进程，
+  但 proxy preamble 预设的 `__atuin_pty_proxy_owns_tty` 会被优先尊重。
+
 ### 3.7 非交互 shell 不注册 hook
 
 在 `zsh -c` / 脚本中 source 插件时，preexec 会在每条 source 语句前触发
@@ -252,7 +419,8 @@ preexec 的最后一条命令如果是 `[[ cond ]] || return`，在 cond 为假�
 直接调用 builtin：
 
 ```zsh
-atuin_search_interactive "$BUFFER"
+ATUIN_SEARCH_QUERY="$BUFFER"
+atuin_search_interactive
 ```
 
 builtin 把结果写入 `$ATUIN_SEARCH_SELECTED`（fork guard 只允许父进程），
@@ -353,7 +521,6 @@ zsh 测试逻辑不写进 CMake `COMMAND` 内联字符串。`${var}`、引号层
 | 层级 | 目标 | 工具 |
 | --- | --- | --- |
 | Rust 单元测试 | ffi.rs 全部导出函数 + TUI 状态机/编辑逻辑 | `cargo test` |
-| C 单元测试 | zsh builtin 参数解析 helper | 普通 cc 可执行文件 |
 | C 系统测试 | dlopen 调用所有 FFI 导出，fork guard | `ffi_smoke` |
 | zsh 集成测试 | 模块加载、history 往返、search、unload | `test_zsh.sh` |
 | zsh 系统测试 | `$()`/`&`/管道/子 shell/进程替换后父进程仍可用 | `test_fork_zsh.sh` |

@@ -39,7 +39,15 @@ ALT_LEAVE = b"\x1b[?1049l"
 class PwshPty:
     def __init__(self, dll_dir: str, data_dir: str):
         env = os.environ.copy()
-        env.update(TERM="xterm-256color")
+        # atuin_init takes no data directory, so the session resolves
+        # its paths from the settings tree. Pass an isolated settings tree to
+        # the child through the real environment (execvpe), which the native
+        # Rust code reads.
+        env.update(
+            TERM="xterm-256color",
+            ATUIN_CONFIG_DIR=os.path.join(data_dir, "config"),
+            ATUIN_DATA_DIR=data_dir,
+        )
 
         pwsh = os.environ.get("PWSH", "pwsh")
         pid, self.master = pty.fork()
@@ -134,6 +142,13 @@ def main() -> int:
         return 1
 
     data_dir = tempfile.mkdtemp(prefix="atuin-pwsh-tui-")
+    config_dir = os.path.join(data_dir, "config")
+    os.makedirs(config_dir, exist_ok=True)
+    with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as handle:
+        # Mirror the shipped default config for the settings the TUI test relies
+        # on: enter_accept=true is the upstream default and gives results the
+        # __atuin_accept__: prefix.
+        handle.write(f'data_dir = "{data_dir}"\nenter_accept = true\n')
     shell = PwshPty(dll_dir, data_dir)
     checks = 0
     try:
@@ -147,22 +162,21 @@ def main() -> int:
         # history entry.
         shell.run_command(
             f"$env:ATUIN_FFI_PATH='{dll_dir}/libatuin_ffi.so'; "
-            f"$env:ATUIN_DATA_DIR='{data_dir}'; "
             f"Add-Type -Path '{dll_dir}/AtuinNative.dll'; "
             "[AtuinNative.AtuinEnvironment]::Set('ATUIN_SHELL','powershell'); "
-            "$s=[AtuinNative.AtuinSession]::new($env:ATUIN_DATA_DIR); "
-            "[AtuinNative.AtuinEnvironment]::Set('ATUIN_SESSION',$s.SessionUuid()); "
-            "$id=$s.HistoryStart('echo pwsh-tui-oldest', (Get-Location).Path); "
-            "$s.HistoryEnd($id,0,0,$true); "
-            "$id=$s.HistoryStart('echo pwsh-tui-newest', (Get-Location).Path); "
-            "$s.HistoryEnd($id,0,0,$true); "
+            "[AtuinNative.Session]::Initialize(); "
+            "[AtuinNative.AtuinEnvironment]::Set('ATUIN_SESSION',[AtuinNative.Session]::SessionUuid()); "
+            "$id=[AtuinNative.Session]::HistoryStart('echo pwsh-tui-oldest', (Get-Location).Path); "
+            "[AtuinNative.Session]::HistoryEnd($id,0,0,$true); "
+            "$id=[AtuinNative.Session]::HistoryStart('echo pwsh-tui-newest', (Get-Location).Path); "
+            "[AtuinNative.Session]::HistoryEnd($id,0,0,$true); "
             "Write-Output 'TUI_PWSH_SEED_OK'",
             b"TUI_PWSH_SEED_OK\r\n",
         )
         checks += 1
 
         # ---- 1. Managed SearchInteractive selects the newest match ---------
-        shell.run_command("$sel=$s.SearchInteractive('echo pwsh')", b"")  # starts the TUI
+        shell.run_command("$sel=[AtuinNative.Session]::SearchInteractive('echo pwsh')", b"")  # starts the TUI
         shell.wait_for(ALT_ENTER)
         time.sleep(0.3)
         shell.send("\r")
@@ -172,7 +186,7 @@ def main() -> int:
         checks += 1
 
         # ---- 2. Escape cancels and returns null ----------------------------
-        shell.run_command("$cancel=$s.SearchInteractive('zz-no-match')", b"")
+        shell.run_command("$cancel=[AtuinNative.Session]::SearchInteractive('zz-no-match')", b"")
         shell.wait_for(ALT_ENTER)
         time.sleep(0.3)
         shell.send("\x1b")
@@ -182,11 +196,11 @@ def main() -> int:
         checks += 1
 
         # ---- 3. Ctrl+R PSReadLine handler runs the TUI in-process ----------
-        # Dispose the direct session and let the module create its own. The
+        # Shut the direct session down and let the module create its own. The
         # module must auto-bind Ctrl+R / UpArrow on import exactly like
         # `atuin init powershell` — no explicit Enable-AtuinSearchKeys here.
         shell.run_command(
-            "$s.Dispose(); "
+            "[AtuinNative.Session]::Shutdown(); "
             f"Import-Module '{dll_dir}/atuin-native.psd1' -Force; "
             "Write-Output 'TUI_PWSH_IMPORT_OK'",
             b"TUI_PWSH_IMPORT_OK\r\n",

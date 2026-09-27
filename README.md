@@ -13,10 +13,16 @@
   自动补全:   atuin search --cmd-only --limit 1 ...                    # 每次按键
 
 Native 模式（进程内，0 次 fork）:
-  preexec:   atuin_history_start "$1" "$PWD"   # builtin → FFI → Session
-  precmd:    atuin_history_end "$ID" "$EXIT" "$duration"   # builtin → FFI
-  自动补全:   atuin_search "$1" 1               # builtin，结果写入 $ATUIN_SEARCH_RESULT
-  交互式TUI:  atuin_search_interactive "$BUFFER"  # builtin，全屏 TUI，Ctrl+R widget
+  preexec:   ATUIN_HISTORY_COMMAND="$1" ATUIN_HISTORY_CWD="$PWD"
+             atuin_history_start          # builtin → FFI → Session
+  precmd:    ATUIN_HISTORY_EXIT="$EXIT" ATUIN_HISTORY_DURATION_NS="$duration"
+             atuin_history_end            # builtin → FFI
+  自动补全:   ATUIN_SEARCH_QUERY="$1" ATUIN_SEARCH_LIMIT=1
+             atuin_search_prefix          # builtin，结果写入 $ATUIN_SEARCH_RESULT
+  交互式TUI:  ATUIN_SEARCH_QUERY="$BUFFER"
+             atuin_search_interactive     # builtin，全屏 TUI，Ctrl+R widget
+  统计:       ATUIN_STATS_VERBOSE=1
+             atuin_stats                  # builtin，写入 $ATUIN_STATS_* 并打印摘要
 ```
 
 `Session` 在 shell 进程内常驻，持有 `history.db` / `records.db` 连接、
@@ -138,21 +144,34 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 1. `zmodload atuin_native`
 2. 初始化 `ATUIN_SESSION` / `ATUIN_SHLVL`
 3. 注册 preexec / precmd / zshaddhistory hook
-4. 安装 zsh-autosuggestions 的 `atuin_native` strategy
+4. 安装 zsh-autosuggestions 的 `atuin` strategy（与官方同名；`atuin_native` 保留为兼容别名）。无论插件在 zsh-autosuggestions **之前还是之后** source，都会把 `atuin` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`，与官方 `atuin.zsh` 完全一致
 5. 定义 `atuin-search` / `atuin-up-search` 等兼容 ZLE widget
-6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）
-7. 支持 OSC 133 标记（`ATUIN_PTY_PROXY_ACTIVE` 时）
+6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）；设置 `ATUIN_NOBIND` 可跳过绑定（同官方）
+7. 支持 OSC 133 标记（`__atuin_pty_proxy_owns_tty=1` 时，逻辑与官方 `atuin.zsh` 相同）
+
+与官方 `atuin init zsh` 的差异（这些功能依赖外部 `atuin` 二进制或 daemon，进程内无法提供）：
+
+- tmux popup 搜索（`tmux display-popup` + `atuin search -i`）：进程内 TUI 直接在当前终端绘制，插件会 `export ATUIN_TMUX_POPUP=false`；
+- `atuin ai inline` 自然语言模式（`?` widget）；
+- `atuin __internal prepare-search-index`：进程内 prefix search 直接查 SQLite，没有外部索引需要预热;
+- PTY proxy 的存活性探测用 `ATUIN_PTY_PROXY_ACTIVE` 近似（官方会再请求 `atuin __internal pty-proxy-active`），但 proxy preamble 预设的 `__atuin_pty_proxy_owns_tty` 会被尊重。
 
 #### Builtin 命令
 
 | 命令 | 说明 |
 |------|------|
-| `atuin_history_start "cmd" [cwd]` | 记录命令开始，写入 `$ATUIN_HISTORY_ID` 并输出 ID |
-| `atuin_history_end <id> <exit> [duration_ns] [--sync]` | 记录命令结束。默认 fire-and-forget，`--sync` 同步等待并报告错误 |
-| `atuin_search <query> [limit]` | 前缀搜索，结果写入 `$ATUIN_SEARCH_RESULT` |
-| `atuin_search_interactive [query]` | 全屏交互式 TUI 搜索（上游完整 TUI），结果写入 `$ATUIN_SEARCH_SELECTED`；返回 0=选中、1=取消、2=错误 |
+| `atuin_history_start` | 读取 `$ATUIN_HISTORY_COMMAND`、`$ATUIN_HISTORY_CWD`、`$ATUIN_HISTORY_AUTHOR`、`$ATUIN_HISTORY_AUTHOR_KIND`（`user`/`agent`）、`$ATUIN_HISTORY_INTENT`，写入 `$ATUIN_HISTORY_ID` |
+| `atuin_history_end` | 读取 `$ATUIN_HISTORY_ID`、`$ATUIN_HISTORY_EXIT`、`$ATUIN_HISTORY_DURATION_NS`、`$ATUIN_HISTORY_SYNC`。默认 fire-and-forget，`ATUIN_HISTORY_SYNC=1` 同步等待并报告错误 |
+| `atuin_search` | 读取 `$ATUIN_SEARCH_QUERY`/`$ATUIN_SEARCH_MODE`/`$ATUIN_SEARCH_FILTER_MODE`/`$ATUIN_SEARCH_LIMIT`/`$ATUIN_SEARCH_AUTHORS`/`$ATUIN_SEARCH_SHELLS`/`$ATUIN_SEARCH_EXITS`/`$ATUIN_SEARCH_EXCLUDE_EXITS` 等（exit 过滤为 zsh 数组，对应上游可重复的 `--exit`/`--exclude-exit`），结果写入 `$ATUIN_SEARCH_RESULT` |
+| `atuin_search_prefix` | autosuggest 快路径：读取 `$ATUIN_SEARCH_QUERY`、`$ATUIN_SEARCH_LIMIT`（默认 1），结果写入 `$ATUIN_SEARCH_RESULT` |
+| `atuin_search_interactive` | 读取 `$ATUIN_SEARCH_QUERY`、`$ATUIN_SEARCH_SHELL_UP_KEY_BINDING`、`$ATUIN_SEARCH_KEYMAP_MODE`（`auto`/`emacs`/`vim-normal`/`vim-insert`），全屏交互式 TUI 搜索（上游完整 TUI），结果写入 `$ATUIN_SEARCH_SELECTED`；返回 0=选中、1=取消、2=错误 |
+| `atuin_stats` | 读取 `$ATUIN_STATS_VERBOSE`/`$ATUIN_STATS_QUIET`，写入 `$ATUIN_STATS_*` 计数并打印摘要（对齐 `starship_stats`） |
 | `atuin_session_id` | 输出并写入 `$ATUIN_SESSION` |
-| `atuin_version` | 输出并写入 `$ATUIN_NATIVE_VERSION` |
+| `atuin_version` | 输出并写入 `$ATUIN_VERSION` |
+
+所有 builtin 都**不接受命令行参数**，输入输出全部通过 zsh 参数交换，和
+starship/zoxide native 模块一致。这样 C shim 不需要自己解析 argv；插件只
+设置变量再调用 builtin，也不使用命令替换。
 
 **fork 安全**：在 `$(...)`、`&`、管道非末位、子 shell 中调用 builtin 时，
 FFI fork guard 会拒绝调用并返回非零，不会崩溃。hook 脚本因此全部使用参数传递，
@@ -161,7 +180,8 @@ FFI fork guard 会拒绝调用并返回非零，不会崩溃。hook 脚本因此
 **交互式 TUI 按键**：输入即模糊过滤（默认 fuzzy），`↑/↓`（或 `Ctrl+P/N`）
 选择，`Enter` 选中（`enter_accept = true` 时直接执行），`Tab` 只替换不执行，
 `Esc` / `Ctrl+C` / `Ctrl+G` 取消，`Ctrl+S` 在 fuzzy → prefix → full-text 间
-循环，`Ctrl+U` 清空、`Ctrl+W` 删词、`Ctrl+L` 重绘。
+循环，`Ctrl+U` 清空、`Ctrl+W` 删词、`Ctrl+L` 重绘；鼠标滚轮上/下选择结果，
+括号粘贴只填充查询而不会直接执行。
 
 ### pwsh
 
@@ -171,23 +191,46 @@ Import-Module atuin-native       # 安装后
 Import-Module /path/to/pwsh_src/AtuinNative/bin/Release/net8.0/atuin-native.psd1
 
 Get-AtuinNativeVersion
+Get-AtuinNativeStats             # 会话统计摘要（history/search 计数）
 Enable-AtuinSearchKeys           # 可选：重新绑定（导入时已自动绑定）
 ```
 
 模块导入后自动替换 `PSConsoleHostReadLine`，在每行命令前后调用进程内
 `HistoryStart` / `HistoryEnd`，并**自动**把 Ctrl+R / UpArrow 绑定到进程内
 全屏 TUI 搜索（与 `atuin init powershell` 一致）；移除模块时恢复原始
-函数并释放 native session。
+函数并关闭 native session。
 
-直接使用托管封装：
+退出搜索后与官方 `atuin.ps1` 一样调用
+`[Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt` 复位 PSReadLine 的
+光标状态，并遵循 `ATUIN_POWERSHELL_PROMPT_OFFSET`（未设置时按当前 prompt
+行数推导，多行 prompt 可用它手动覆盖）。官方模块中依赖外部 `atuin`
+二进制的 `__internal prepare-search-index` 预热在进程内不需要，因此没有对应步骤。
+
+直接使用静态托管封装（native 只维护一个进程级 session，重复 `Init()` 幂等并保留
+现有 session；`Shutdown()` 幂等）：
 
 ```powershell
-$session = [AtuinNative.AtuinSession]::new($env:ATUIN_DATA_DIR)
-$id = $session.HistoryStart("my-command", (Get-Location).Path)
-$session.HistoryEnd($id, 0, 0, $true)   # sync
-$results = $session.SearchPrefix("my-command", 5)
-$selected = $session.SearchInteractive("my")   # 全屏 TUI；取消返回 $null
-$session.Dispose()
+# 无参数：数据目录与官方 CLI 一样由配置解析（ATUIN_DATA_DIR / XDG / config.toml）
+[AtuinNative.Session]::Initialize()
+$id = [AtuinNative.Session]::HistoryStart("my-command", (Get-Location).Path)
+# author / authorKind / intent 对应官方 --author / --author-kind / --intent：
+# [AtuinNative.Session]::HistoryStart("my-command", $pwd, "claude", [AtuinNative.AtuinAuthorKind]::Agent, "why")
+[AtuinNative.Session]::HistoryEnd($id, 0, 0, $true)   # sync
+$results = [AtuinNative.Session]::SearchPrefix("my-command", 5)
+$options = [AtuinNative.AtuinSearchOptions]::new()
+$options.Query = "my-command"
+$options.SearchMode = [AtuinNative.AtuinSearchMode]::Prefix
+$options.FilterMode = [AtuinNative.AtuinFilterMode]::Global
+$options.Limit = 5
+# 可重复的 --exit / --exclude-exit 对应 long[]：
+# $options.Exits = [long[]]@(1, 130); $options.ExcludeExits = [long[]]@(0)
+$results = [AtuinNative.Session]::Search($options)
+$selected = [AtuinNative.Session]::SearchInteractive("my")   # 全屏 TUI；取消返回 $null
+# UpArrow / vi widget 对应官方 --shell-up-key-binding / --keymap-mode：
+# [AtuinNative.Session]::SearchInteractive("my", $true, [AtuinNative.AtuinKeymapMode]::VimNormal)
+$stats = [AtuinNative.Session]::GetStats()          # AtuinStats 快照
+$report = [AtuinNative.Session]::GetStatsReport()   # 一行摘要
+[AtuinNative.Session]::Shutdown()
 ```
 
 如果 FFI 库不在 `AtuinNative.dll` 同目录，设置 `$env:ATUIN_FFI_PATH`。
@@ -196,7 +239,8 @@ $session.Dispose()
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `ATUIN_DATA_DIR` | `~/.local/share/atuin` | 数据目录（`history.db`、`records.db`、key） |
+| `ATUIN_DATA_DIR` | `~/.local/share/atuin` | 数据目录（`history.db`、`records.db`、key）；与官方 CLI 一致由 Settings 解析 |
+| `ATUIN_CONFIG_DIR` | `~/.config/atuin` | config.toml 所在目录（官方 CLI 同样支持） |
 | `ATUIN_SESSION` | 插件自动设置 | 当前 shell 会话 UUID |
 | `ATUIN_NATIVE_DIR` | 插件自动探测 | zsh 模块与 FFI 库目录 |
 | `ATUIN_FFI_PATH` | `AtuinNative.dll` 同目录 | pwsh 使用的 FFI 库路径 |

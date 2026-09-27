@@ -23,8 +23,9 @@
     # PSConsoleHostReadLine is installed as a global function by the .psm1 and
     # is exported here for compatibility with the official atuin module.
     FunctionsToExport    = @(
-        'Get-AtuinNativeSession'
+        'Initialize-AtuinNativeSession'
         'Get-AtuinNativeVersion'
+        'Get-AtuinNativeStats'
         'Invoke-AtuinSearch'
         'Enable-AtuinSearchKeys'
         'PSConsoleHostReadLine'

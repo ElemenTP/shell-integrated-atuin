@@ -37,50 +37,80 @@ try {
     Add-Type -Path $asmPath
     Write-Host "PASS: assembly loaded"
 
-    $version = [AtuinNative.AtuinSession]::VersionStr()
+    # atuin_init takes no data directory: sessions resolve their
+    # paths from the settings tree. Point it at the isolated temp directory so
+    # the tests never read or write the developer's real ~/.config/atuin.
+    $configDir = Join-Path $dataDir 'config'
+    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+    $dataDirToml = $dataDir.Replace('\', '/')
+    Set-Content -LiteralPath (Join-Path $configDir 'config.toml') -Value "data_dir = `"$dataDirToml`""
+    [AtuinNative.AtuinEnvironment]::Set('ATUIN_CONFIG_DIR', $configDir)
+    [AtuinNative.AtuinEnvironment]::Set('ATUIN_DATA_DIR', $dataDir)
+
+    $version = [AtuinNative.Session]::Version()
     if ($version) { Write-Host "PASS: version $version" } else { throw "empty version" }
 
-    [AtuinNative.AtuinEnvironment]::Set('ATUIN_NATIVE_PWSH_TEST', 'integration-test')
-    if ([AtuinNative.AtuinEnvironment]::Get('ATUIN_NATIVE_PWSH_TEST') -ne 'integration-test') {
-        throw "AtuinEnvironment Set/Get failed"
-    }
-    [AtuinNative.AtuinEnvironment]::Remove('ATUIN_NATIVE_PWSH_TEST')
-    Write-Host "PASS: environment helper"
-
-    $session = [AtuinNative.AtuinSession]::new($dataDir)
+    [AtuinNative.Session]::Initialize()
     Write-Host "PASS: session created"
-    $uuid = $session.SessionUuid()
+
+    $firstUuid = [AtuinNative.Session]::SessionUuid()
+    [AtuinNative.Session]::Initialize()   # idempotent: keeps the active session
+    if ([AtuinNative.Session]::SessionUuid() -ne $firstUuid) {
+        throw "second Init replaced the active session"
+    }
+    Write-Host "PASS: second Init is idempotent"
+
+    $uuid = [AtuinNative.Session]::SessionUuid()
     if (-not $uuid) { throw "empty session UUID" }
     Write-Host "PASS: session UUID ($uuid)"
 
-    $id = $session.HistoryStart("echo pwsh-integration-test", "/tmp")
+    $id = [AtuinNative.Session]::HistoryStart("echo pwsh-integration-test", "/tmp")
     if (-not $id) { throw "HistoryStart returned empty id" }
     Write-Host "PASS: HistoryStart ($id)"
 
-    $session.HistoryEnd($id, 0, 1000000, $true)
+    [AtuinNative.Session]::HistoryEnd($id, 0, 1000000, $true)
     Write-Host "PASS: HistoryEnd (sync)"
 
-    $results = $session.SearchPrefix("echo pwsh-integration-test", 5)
+    $results = [AtuinNative.Session]::SearchPrefix("echo pwsh-integration-test", 5)
     if ($results.Count -ne 1 -or $results[0] -ne "echo pwsh-integration-test") {
         throw "SearchPrefix returned unexpected results: $($results -join ' | ')"
     }
     Write-Host "PASS: SearchPrefix found recorded command"
 
-    $session.Dispose()
-    $session.Dispose()  # idempotent
-    Write-Host "PASS: session disposed twice"
+    $searchOptions = [AtuinNative.AtuinSearchOptions]::new()
+    $searchOptions.Query = "echo pwsh-integration-test"
+    $searchOptions.SearchMode = [AtuinNative.AtuinSearchMode]::Prefix
+    $searchOptions.Limit = 5
+    $searchOptions.Authors = @('$all-user')
+    $genericResults = [AtuinNative.Session]::Search($searchOptions)
+    if ($genericResults.Count -ne 1 -or $genericResults[0] -ne "echo pwsh-integration-test") {
+        throw "Search returned unexpected results: $($genericResults -join ' | ')"
+    }
+    Write-Host "PASS: Search with upstream-compatible options found recorded command"
+
+    [AtuinNative.Session]::Shutdown()
+    [AtuinNative.Session]::Shutdown()  # idempotent
+    Write-Host "PASS: session shut down twice"
 
     # ---- Full module import (manifest + .psm1) ----
     Import-Module PSReadLine -ErrorAction SilentlyContinue
     Import-Module $manifestPath -Force
     Write-Host "PASS: module imported"
 
-    $moduleSession = Get-AtuinNativeSession
-    $moduleId = $moduleSession.HistoryStart("echo pwsh-module-test", "/tmp")
-    $moduleSession.HistoryEnd($moduleId, 0, 0, $true)
-    $moduleResults = $moduleSession.SearchPrefix("echo pwsh-module-test", 5)
+    Initialize-AtuinNativeSession
+    $moduleId = [AtuinNative.Session]::HistoryStart("echo pwsh-module-test", "/tmp")
+    [AtuinNative.Session]::HistoryEnd($moduleId, 0, 0, $true)
+    $moduleResults = [AtuinNative.Session]::SearchPrefix("echo pwsh-module-test", 5)
     if ($moduleResults.Count -ne 1) { throw "module session search failed" }
     Write-Host "PASS: module session history/search"
+
+    $statsReport = Get-AtuinNativeStats
+    if (-not $statsReport) { throw "Get-AtuinNativeStats returned nothing" }
+    $stats = [AtuinNative.Session]::GetStats()
+    if ($stats.HistoryStarts -lt 1 -or $stats.SearchPrefixCalls -lt 1) {
+        throw "stats did not count the module session's operations: $statsReport"
+    }
+    Write-Host "PASS: session stats ($statsReport)"
 
     if (Get-Module PSReadLine -ErrorAction Ignore) {
         $readLineFunction = Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue
@@ -101,9 +131,9 @@ try {
     # ---- Module unload/load cycles ----
     for ($i = 1; $i -le 3; $i++) {
         Import-Module $manifestPath -Force
-        $s = Get-AtuinNativeSession
-        $id2 = $s.HistoryStart("echo pwsh-cycle-$i", "/tmp")
-        $s.HistoryEnd($id2, 0, 0, $true)
+        Initialize-AtuinNativeSession
+        $id2 = [AtuinNative.Session]::HistoryStart("echo pwsh-cycle-$i", "/tmp")
+        [AtuinNative.Session]::HistoryEnd($id2, 0, 0, $true)
         Remove-Module atuin-native -Force
         Write-Host "PASS: module cycle $i"
     }

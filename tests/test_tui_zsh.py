@@ -9,6 +9,10 @@ strokes. It verifies:
   * Enter selects the newest match;
   * ArrowUp + Enter selects the older match (upstream default);
   * Escape cancels and leaves $ATUIN_SEARCH_SELECTED empty;
+  * SGR mouse motion is consumed (does not cancel) and wheel-up selects the
+    older match;
+  * bracketed paste filters the query without executing it;
+  * CSI-u (Kitty keyboard protocol) encoded keys are decoded;
   * terminal raw mode is restored (the shell still echoes/executes commands);
   * the plugin's atuin-search ZLE widget (Ctrl+R) drives the same TUI and
     replaces the line editor buffer with the selection.
@@ -40,6 +44,7 @@ class PtyShell:
         env.update({
             "TERM": "xterm-256color",
             "ATUIN_DATA_DIR": data_dir,
+            "ATUIN_CONFIG_DIR": os.path.join(data_dir, "config"),
             "MODULE_DIR": module_dir,
             "REPO_ROOT": repo_root,
         })
@@ -126,6 +131,16 @@ def main() -> int:
         return 1
 
     data_dir = tempfile.mkdtemp(prefix="atuin-tui-test-")
+    # atuin_init takes no data directory: the session resolves its
+    # paths from the settings tree, so pin `data_dir` explicitly in an isolated
+    # config.toml instead of touching the developer's real ~/.config/atuin.
+    config_dir = os.path.join(data_dir, "config")
+    os.makedirs(config_dir, exist_ok=True)
+    with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as handle:
+        # Mirror the shipped default config for the settings the TUI test relies
+        # on: enter_accept=true is the upstream default and gives results the
+        # __atuin_accept__: prefix.
+        handle.write(f'data_dir = "{data_dir}"\nenter_accept = true\n')
     shell = PtyShell(module_dir, repo_root, data_dir)
     tests = 0
     try:
@@ -153,18 +168,21 @@ def main() -> int:
 
         # ---- Seed history ----------------------------------------------------
         shell.run(
-            "atuin_history_start 'echo tui-oldest' \"$PWD\" >/dev/null 2>&1; "
-            "atuin_history_end \"${ATUIN_HISTORY_ID:-}\" 0 0 --sync; "
-            "ATUIN_HISTORY_ID=''; "
-            "atuin_history_start 'echo tui-newest' \"$PWD\" >/dev/null 2>&1; "
-            "atuin_history_end \"${ATUIN_HISTORY_ID:-}\" 0 0 --sync; "
+            "ATUIN_HISTORY_COMMAND='echo tui-oldest'; ATUIN_HISTORY_CWD=\"$PWD\"; "
+            "ATUIN_HISTORY_ID=''; atuin_history_start >/dev/null 2>&1; "
+            "ATUIN_HISTORY_ID=\"${ATUIN_HISTORY_ID:-}\"; ATUIN_HISTORY_EXIT=0; "
+            "ATUIN_HISTORY_DURATION_NS=0; ATUIN_HISTORY_SYNC=1; atuin_history_end; "
+            "ATUIN_HISTORY_COMMAND='echo tui-newest'; ATUIN_HISTORY_CWD=\"$PWD\"; "
+            "ATUIN_HISTORY_ID=''; atuin_history_start >/dev/null 2>&1; "
+            "ATUIN_HISTORY_ID=\"${ATUIN_HISTORY_ID:-}\"; ATUIN_HISTORY_EXIT=0; "
+            "ATUIN_HISTORY_DURATION_NS=0; ATUIN_HISTORY_SYNC=1; atuin_history_end; "
             "print -r -- TUI_SEED_OK",
             "TUI_SEED_OK",
         )
         tests += 1
 
         # ---- 1. Enter selects the newest match -------------------------------
-        shell.send('atuin_search_interactive "echo tui"\n')
+        shell.send('ATUIN_SEARCH_QUERY="echo tui"; atuin_search_interactive\n')
         wait_for_alt_screen(shell, entered=True)
         shell.send("\r")  # Enter: newest first
         wait_for_alt_screen(shell, entered=False)
@@ -175,7 +193,7 @@ def main() -> int:
         tests += 1
 
         # ---- 2. ArrowUp + Enter selects the older match --------------------
-        shell.send('atuin_search_interactive "echo tui"\n')
+        shell.send('ATUIN_SEARCH_QUERY="echo tui"; atuin_search_interactive\n')
         wait_for_alt_screen(shell, entered=True)
         shell.send("\x1b[A")  # ArrowUp
         shell.send("\r")
@@ -187,7 +205,7 @@ def main() -> int:
         tests += 1
 
         # ---- 3. Escape cancels and keeps the parameter empty -----------------
-        shell.send('atuin_search_interactive "no-such-command-zz"\n')
+        shell.send('ATUIN_SEARCH_QUERY="no-such-command-zz"; atuin_search_interactive\n')
         wait_for_alt_screen(shell, entered=True)
         shell.send("\x1b")  # Esc
         wait_for_alt_screen(shell, entered=False)
@@ -197,7 +215,52 @@ def main() -> int:
         )
         tests += 1
 
-        # ---- 4. The plugin widget (Ctrl+R in ZLE) drives the same TUI --------
+        # ---- 4. Mouse reports are consumed, not misread as Esc --------------
+        # Upstream enables any-event mouse tracking. Raw motion must not cancel
+        # the TUI, and wheel-up must select the older entry.
+        shell.send('ATUIN_SEARCH_QUERY="echo tui"; atuin_search_interactive\n')
+        wait_for_alt_screen(shell, entered=True)
+        shell.send("\x1b[<35;10;10M")  # motion event: ignored
+        time.sleep(0.3)
+        shell.send("\x1b[<64;10;10M")  # wheel up: SelectPrevious
+        time.sleep(0.3)
+        shell.send("\r")
+        wait_for_alt_screen(shell, entered=False)
+        shell.run(
+            'print -r -- "TUI_MOUSE:${ATUIN_SEARCH_SELECTED:-}"',
+            "TUI_MOUSE:__atuin_accept__:echo tui-oldest",
+        )
+        tests += 1
+
+        # ---- 5. Bracketed paste filters without executing --------------------
+        shell.send('ATUIN_SEARCH_QUERY=""; atuin_search_interactive\n')
+        wait_for_alt_screen(shell, entered=True)
+        shell.send("\x1b[200~echo tui-oldest\x1b[201~")
+        time.sleep(0.4)
+        shell.send("\r")
+        wait_for_alt_screen(shell, entered=False)
+        shell.run(
+            'print -r -- "TUI_PASTE:${ATUIN_SEARCH_SELECTED:-}"',
+            "TUI_PASTE:__atuin_accept__:echo tui-oldest",
+        )
+        tests += 1
+
+        # ---- 6. CSI-u encoded keys (Kitty keyboard protocol) -----------------
+        # Upstream pushes keyboard enhancement flags, so kitty/wezterm/foot
+        # report every key as `CSI codepoint ; modifiers u`.
+        shell.send('ATUIN_SEARCH_QUERY="echo tui"; atuin_search_interactive\n')
+        wait_for_alt_screen(shell, entered=True)
+        shell.send("\x1b[57352u")  # CSI-u ArrowUp -> older entry
+        time.sleep(0.3)
+        shell.send("\x1b[13u")     # CSI-u Enter
+        wait_for_alt_screen(shell, entered=False)
+        shell.run(
+            'print -r -- "TUI_CSI_U:${ATUIN_SEARCH_SELECTED:-}"',
+            "TUI_CSI_U:__atuin_accept__:echo tui-oldest",
+        )
+        tests += 1
+
+        # ---- 7. The plugin widget (Ctrl+R in ZLE) drives the same TUI --------
         shell.run(
             f"zmodload -u atuin_native; "
             f"export ATUIN_NATIVE_DIR='{module_dir}'; "
@@ -225,7 +288,7 @@ def main() -> int:
         shell.wait_for(b"tui-newest", timeout=10.0)
         tests += 1
 
-        # ---- 5. UpArrow binding opens the TUI; Esc keeps the buffer -------
+        # ---- 8. UpArrow binding opens the TUI; Esc keeps the buffer -------
         shell.send("echo tui")
         time.sleep(0.3)
         shell.send("\x1b[A")           # UpArrow (CSI form)
@@ -236,7 +299,7 @@ def main() -> int:
         shell.wait_for(b"\r\ntui\r\n", timeout=10.0)
         tests += 1
 
-        # ---- 6. Module unload after TUI widget use -------------------------
+        # ---- 9. Module unload after TUI widget use -------------------------
         shell.run(
             "zmodload -u atuin_native; print -r -- TUI_ZSH_UNLOADED",
             "TUI_ZSH_UNLOADED",

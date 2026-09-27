@@ -18,10 +18,96 @@ namespace AtuinNative;
 /// falling back to default .NET resolution (which probes the directory of
 /// this assembly — exactly where the CMake build copies the library).
 ///
-/// Strings returned by atuin_history_start and atuin_search_prefix must be
-/// freed with atuin_free_string. atuin_session_uuid / atuin_version /
-/// atuin_last_error return library-owned pointers and must NOT be freed.
+/// # Error protocol
+/// Every fallible export returns an error pointer: <see cref="IntPtr.Zero"/>
+/// means success, otherwise the pointer is an allocated UTF-8 error string
+/// that the caller must free with <see cref="Free"/>. Values produced by a
+/// call are written through out parameters.
+///
+/// # Single session
+/// The native library exposes at most one process-wide session (Atuin's client
+/// layer keeps process-global state), so no export takes a session handle.
 /// </summary>
+public enum AtuinSearchMode
+{
+    Auto = 0,
+    Prefix = 1,
+    FullText = 2,
+    Fuzzy = 3,
+    DaemonFuzzy = 4,
+}
+
+public enum AtuinFilterMode
+{
+    Auto = 0,
+    Global = 1,
+    Host = 2,
+    Session = 3,
+    Directory = 4,
+    Workspace = 5,
+    SessionPreload = 6,
+}
+
+/// <summary>Interactive TUI keymap mode (mirrors <c>atuin search --keymap-mode</c>).</summary>
+public enum AtuinKeymapMode
+{
+    Auto = 0,
+    Emacs = 1,
+    VimNormal = 2,
+    VimInsert = 3,
+}
+
+/// <summary>Whether a command was run by a human or an agent (mirrors <c>atuin history start --author-kind</c>).</summary>
+public enum AtuinAuthorKind
+{
+    User,
+    Agent,
+}
+
+/// <summary>C-compatible snapshot of the session's operation counters.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct AtuinStats
+{
+    public ulong HistoryStarts;
+    public ulong HistoryEndsSync;
+    public ulong HistoryEndsAsync;
+    public ulong SearchCalls;
+    public ulong SearchPrefixCalls;
+    public ulong InteractiveSearchCalls;
+    public ulong InteractiveSelections;
+    public ulong InteractiveCancels;
+    public ulong InFlightHistoryEnds;
+    public ulong UptimeSecs;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct AtuinSearchOptionsNative
+{
+    public IntPtr Query;
+    public int SearchMode;
+    public int FilterMode;
+    public IntPtr Cwd;
+    public IntPtr ExcludeCwd;
+    /// <summary>Pointer to <see cref="ExitCount"/> 64-bit exit codes.</summary>
+    public IntPtr Exits;
+    public UIntPtr ExitCount;
+    /// <summary>Pointer to <see cref="ExcludeExitCount"/> 64-bit exit codes.</summary>
+    public IntPtr ExcludeExits;
+    public UIntPtr ExcludeExitCount;
+    public IntPtr Before;
+    public IntPtr After;
+    public int HasLimit;
+    public long Limit;
+    public int HasOffset;
+    public long Offset;
+    public int Reverse;
+    public int IncludeDuplicates;
+    public IntPtr Authors;
+    public UIntPtr AuthorCount;
+    public IntPtr Shells;
+    public UIntPtr ShellCount;
+}
+
 internal static unsafe partial class NativeMethods
 {
     // Platform-specific library name. .NET runtime resolves these as:
@@ -62,75 +148,102 @@ internal static unsafe partial class NativeMethods
 
     // ── Session lifecycle ──────────────────────────────────────────────
 
-    /// <summary>Create a new history session. Returns <see cref="IntPtr.Zero"/> on failure.</summary>
-    [LibraryImport(LibName, EntryPoint = "atuin_session_create", StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial IntPtr SessionCreate(string? dataDir);
+    /// <summary>
+    /// Create the process-wide history session using the data directory
+    /// resolved from the user's Atuin configuration (ATUIN_DATA_DIR, XDG, or
+    /// config.toml), exactly like the official CLI. Returns
+    /// <see cref="IntPtr.Zero"/> on success (including when a session is
+    /// already active), or an allocated error string when creation failed.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_init")]
+    internal static partial IntPtr Init();
 
-    /// <summary>Destroy a session. Passing <see cref="IntPtr.Zero"/> is safe (no-op).</summary>
-    [LibraryImport(LibName, EntryPoint = "atuin_session_destroy")]
-    internal static partial void SessionDestroy(IntPtr session);
+    /// <summary>
+    /// Destroy the process-wide session. Calling it with no active session is a
+    /// successful no-op, so it is safe on cleanup.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_shutdown")]
+    internal static partial IntPtr Shutdown();
 
     // ── History recording ──────────────────────────────────────────────
 
     /// <summary>
-    /// Record a command start. On success (return 0), writes a Rust-allocated
-    /// history ID to <paramref name="idOut"/>; the caller must free it with
-    /// <see cref="FreeString"/>. On failure, the output slot is reset to NULL.
+    /// Record a command start. On success returns <see cref="IntPtr.Zero"/> and
+    /// writes a Rust-allocated history ID to <paramref name="idOut"/>; the
+    /// caller must free it with <see cref="Free"/>.
+    /// <paramref name="authorKind"/> is <c>"user"</c> or <c>"agent"</c>.
     /// </summary>
     [LibraryImport(LibName, EntryPoint = "atuin_history_start", StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int HistoryStart(
-        IntPtr session, string command, string cwd,
-        string? author, string? intent, out IntPtr idOut);
+    internal static partial IntPtr HistoryStart(
+        string command, string cwd,
+        string? author, string? authorKind, string? intent, out IntPtr idOut);
 
     /// <summary>
     /// Finalize a command. When <paramref name="sync"/> is non-zero, the call
-    /// blocks and returns 0 on success; otherwise it schedules the update and
-    /// returns immediately.
+    /// blocks and returns an error string on failure; otherwise it schedules
+    /// the update and returns immediately.
     /// </summary>
     [LibraryImport(LibName, EntryPoint = "atuin_history_end", StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int HistoryEnd(
-        IntPtr session, string id, long exitCode, long durationNs, int sync);
+    internal static partial IntPtr HistoryEnd(
+        string id, long exitCode, long durationNs, int sync);
 
     // ── Search ─────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Prefix search. On success writes a newline-separated UTF-8 string to
-    /// <paramref name="out"/>; the caller must free it with
-    /// <see cref="FreeString"/>.
+    /// Generic search with upstream-compatible options. On success writes a
+    /// newline-separated UTF-8 string of command texts to
+    /// <paramref name="output"/>; the caller must free it with <see cref="Free"/>.
     /// </summary>
-    [LibraryImport(LibName, EntryPoint = "atuin_search_prefix", StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int SearchPrefix(
-        IntPtr session, string? query, int limit, out IntPtr @out);
+    [LibraryImport(LibName, EntryPoint = "atuin_search")]
+    internal static partial IntPtr Search(
+        in AtuinSearchOptionsNative options, out IntPtr output);
 
     /// <summary>
-    /// Interactive full-screen search TUI. Return 0 = selected (free the
-    /// output with <see cref="FreeString"/>), 1 = cancelled, negative = error.
-    /// Blocks until the user selects a command or cancels.
+    /// Prefix search. On success writes a newline-separated UTF-8 string to
+    /// <paramref name="output"/>; the caller must free it with <see cref="Free"/>.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_search_prefix", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial IntPtr SearchPrefix(
+        string? query, int limit, out IntPtr output);
+
+    /// <summary>
+    /// Interactive full-screen search TUI. On success returns
+    /// <see cref="IntPtr.Zero"/>; <paramref name="output"/> is non-zero when the
+    /// user selected a command (free it with <see cref="Free"/>) and zero when
+    /// the user cancelled. Blocks until the user selects a command or cancels.
+    /// <paramref name="shellUpKeyBinding"/> and <paramref name="keymapMode"/>
+    /// mirror the official <c>--shell-up-key-binding</c> / <c>--keymap-mode</c>.
     /// </summary>
     [LibraryImport(LibName, EntryPoint = "atuin_search_interactive", StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int SearchInteractive(
-        IntPtr session, string? query, out IntPtr @out);
+    internal static partial IntPtr SearchInteractive(
+        string? query, int shellUpKeyBinding, int keymapMode, out IntPtr output);
+
+    /// <summary>
+    /// Write a snapshot of the session's operation counters to
+    /// <paramref name="stats"/>. Returns <see cref="IntPtr.Zero"/> on success.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_stats")]
+    internal static partial IntPtr Stats(out AtuinStats stats);
 
     // ── Memory management ──────────────────────────────────────────────
 
-    /// <summary>Free a string returned by history_start or search_prefix. NULL-safe.</summary>
-    [LibraryImport(LibName, EntryPoint = "atuin_free_string")]
-    internal static partial void FreeString(IntPtr ptr);
+    /// <summary>
+    /// Free a string returned by a fallible export (history ID, search result,
+    /// selected command, or error string). NULL-safe.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_free")]
+    internal static partial void Free(IntPtr ptr);
 
     // ── Metadata ───────────────────────────────────────────────────────
 
-    /// <summary>Return the session UUID (session-owned, must NOT be freed).</summary>
+    /// <summary>
+    /// Write the session UUID to <paramref name="uuid"/> (session-owned, must
+    /// NOT be freed). Returns <see cref="IntPtr.Zero"/> on success.
+    /// </summary>
     [LibraryImport(LibName, EntryPoint = "atuin_session_uuid")]
-    internal static partial IntPtr SessionUuid(IntPtr session);
+    internal static partial IntPtr SessionUuid(out IntPtr uuid);
 
     /// <summary>Return the library version (static, must NOT be freed).</summary>
     [LibraryImport(LibName, EntryPoint = "atuin_version")]
     internal static partial IntPtr Version();
-
-    /// <summary>
-    /// Return the last error pointer (library-owned, valid until the next FFI
-    /// call). Returns <see cref="IntPtr.Zero"/> if no error is set.
-    /// </summary>
-    [LibraryImport(LibName, EntryPoint = "atuin_last_error")]
-    internal static partial IntPtr LastError();
 }

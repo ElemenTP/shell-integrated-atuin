@@ -6,7 +6,7 @@
 .DESCRIPTION
     This module mirrors the official atuin/src/shell/atuin.ps1 integration,
     replacing every `atuin` process spawn with the in-process
-    [AtuinNative.AtuinSession] managed wrapper (see AtuinNative.dll).
+    [AtuinNative.Session] managed wrapper (see AtuinNative.dll).
 
     The native library (libatuin_ffi.so / libatuin_ffi.dylib /
     atuin_ffi.dll) must be present next to AtuinNative.dll. To load it from
@@ -22,7 +22,7 @@ Set-StrictMode -Version Latest
 # ---- Ensure the binary assembly is available --------------------------------
 # Normally it is loaded as a NestedModule from the manifest; this fallback only
 # matters when the .psm1 is imported directly during development.
-if (-not ('AtuinNative.AtuinSession' -as [type])) {
+if (-not ('AtuinNative.Session' -as [type])) {
     Import-Module (Join-Path $PSScriptRoot 'AtuinNative.dll') -ErrorAction Stop
 }
 
@@ -44,29 +44,29 @@ if (-not $env:ATUIN_FFI_PATH) {
 # ATUIN_SHELL / ATUIN_SESSION through std::env, so write both blocks.
 [AtuinNative.AtuinEnvironment]::Set('ATUIN_SHELL', 'powershell')
 
-# ---- Native session (created once, lives for the pwsh process) ---------------
-$script:Session = $null
+# ---- Native session (one process-wide session, created on first use) ---------
+$script:SessionInitialized = $false
 $script:NativeWarned = $false
 # Used by the global PSConsoleHostReadLine wrapper to invoke module-private
 # functions even though global functions execute in the global session state.
 $script:AtuinNativeModule = $ExecutionContext.SessionState.Module
 
-function Get-AtuinNativeSession {
+function Initialize-AtuinNativeSession {
     <#
     .SYNOPSIS
-        Returns the process-wide in-process Atuin session, creating it on first
-        use.
+        Ensures the process-wide in-process Atuin session exists.
     #>
-    if ($null -eq $script:Session) {
-        $dataDir = $env:ATUIN_DATA_DIR
-        $script:Session = [AtuinNative.AtuinSession]::new($dataDir)
+    if (-not $script:SessionInitialized) {
+        # No data directory is passed: the native session resolves it from the
+        # user's Atuin configuration exactly like the official CLI.
+        [AtuinNative.Session]::Initialize()
 
-        $uuid = $script:Session.SessionUuid()
+        $uuid = [AtuinNative.Session]::SessionUuid()
         $env:ATUIN_SESSION = $uuid
         [AtuinNative.AtuinEnvironment]::Set('ATUIN_SESSION', $uuid)
         $env:ATUIN_PID = $PID
+        $script:SessionInitialized = $true
     }
-    return $script:Session
 }
 
 function Get-AtuinNativeVersion {
@@ -74,7 +74,16 @@ function Get-AtuinNativeVersion {
     .SYNOPSIS
         Returns the version of the embedded atuin-ffi native library.
     #>
-    return [AtuinNative.AtuinSession]::VersionStr()
+    return [AtuinNative.Session]::Version()
+}
+
+function Get-AtuinNativeStats {
+    <#
+    .SYNOPSIS
+        Returns a summary of the in-process session's operation counters.
+    #>
+    Initialize-AtuinNativeSession
+    return [AtuinNative.Session]::GetStatsReport()
 }
 
 # ---- PSReadLine integration --------------------------------------------------
@@ -105,6 +114,37 @@ function Set-AtuinCommandLine {
     }
 }
 
+function Reset-AtuinPrompt {
+    <#
+    .SYNOPSIS
+        Reset PSReadLine's cursor state after the in-process TUI repainted.
+
+    .DESCRIPTION
+        PSReadLine maintains its own cursor position, which is no longer valid
+        once the search TUI has scrolled the display. `InvokePrompt` accepts a
+        new Y position and rebuilds that state. This mirrors the official
+        atuin.ps1, including the ATUIN_POWERSHELL_PROMPT_OFFSET contract:
+        when unset it is derived from the current prompt's line count (so a
+        multi-line prompt offsets correctly) and users can override it.
+    #>
+    if ($null -eq $env:ATUIN_POWERSHELL_PROMPT_OFFSET) {
+        try {
+            $promptLines = (& $Function:prompt | Out-String | Measure-Object -Line).Lines
+            $env:ATUIN_POWERSHELL_PROMPT_OFFSET = -1 * ($promptLines - 1)
+        } catch {
+            $env:ATUIN_POWERSHELL_PROMPT_OFFSET = 0
+        }
+    }
+
+    try {
+        $y = $Host.UI.RawUI.CursorPosition.Y + [int]$env:ATUIN_POWERSHELL_PROMPT_OFFSET
+        $y = [System.Math]::Max([System.Math]::Min($y, [System.Console]::BufferHeight - 1), 0)
+        [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt($null, $y)
+    } catch {
+        # Refreshing the prompt is best-effort; never break the shell over it.
+    }
+}
+
 function Invoke-AtuinNativeReadLine {
     # 1. Collect the exit code of the previous command.
     $lastRunStatus = $?
@@ -120,7 +160,8 @@ function Invoke-AtuinNativeReadLine {
                 # .NET TimeSpan.Ticks are 100 ns; Atuin stores nanoseconds.
                 $duration = [long]($lastHistory.Duration.Ticks * 100)
             }
-            (Get-AtuinNativeSession).HistoryEnd($script:AtuinHistoryId, [long]$exitCode, $duration, $false)
+            Initialize-AtuinNativeSession
+            [AtuinNative.Session]::HistoryEnd($script:AtuinHistoryId, [long]$exitCode, $duration, $false)
         } catch {
             # Ignore errors so shell input is never blocked by history failure.
         } finally {
@@ -153,7 +194,8 @@ function Invoke-AtuinNativeReadLine {
             } else {
                 (Get-Location).Path
             }
-            $script:AtuinHistoryId = (Get-AtuinNativeSession).HistoryStart($line, $cwd)
+            Initialize-AtuinNativeSession
+            $script:AtuinHistoryId = [AtuinNative.Session]::HistoryStart($line, $cwd)
         } catch {
             # Ignore errors to avoid breaking the shell.
         }
@@ -198,10 +240,29 @@ function Invoke-AtuinSearch {
         return
     }
 
+    # Mirror the official `atuin search -i` flags the widgets pass: the UpArrow
+    # binding uses --shell-up-key-binding and the vi widgets add --keymap-mode.
+    $shellUp = $false
+    $keymapMode = [AtuinNative.AtuinKeymapMode]::Auto
+    foreach ($arg in ($ExtraArgs -split '\s+' | Where-Object { $_ })) {
+        switch -Regex ($arg) {
+            '^--shell-up-key-binding$' { $shellUp = $true }
+            '^--keymap-mode=(?<mode>.+)$' {
+                $keymapMode = switch ($Matches['mode']) {
+                    'emacs'      { [AtuinNative.AtuinKeymapMode]::Emacs }
+                    'vim-normal' { [AtuinNative.AtuinKeymapMode]::VimNormal }
+                    'vim-insert' { [AtuinNative.AtuinKeymapMode]::VimInsert }
+                    default      { [AtuinNative.AtuinKeymapMode]::Auto }
+                }
+            }
+        }
+    }
+
     $query = Get-AtuinCommandLine
 
     try {
-        $selected = (Get-AtuinNativeSession).SearchInteractive($query)
+        Initialize-AtuinNativeSession
+        $selected = [AtuinNative.Session]::SearchInteractive($query, $shellUp, $keymapMode)
     } catch {
         if (-not $script:NativeWarned) {
             $script:NativeWarned = $true
@@ -209,6 +270,9 @@ function Invoke-AtuinSearch {
         }
         return
     }
+
+    # The TUI repainted the screen, so PSReadLine's cached cursor state is stale.
+    Reset-AtuinPrompt
 
     if ($null -eq $selected) {
         # Esc / Ctrl+C / Ctrl+G: keep the buffer exactly as it was.
@@ -264,8 +328,9 @@ if (Get-Module PSReadLine -ErrorAction Ignore) {
 
 # ---- Export the public API ---------------------------------------------------
 Export-ModuleMember -Function @(
-    "Get-AtuinNativeSession"
+    "Initialize-AtuinNativeSession"
     "Get-AtuinNativeVersion"
+    "Get-AtuinNativeStats"
     "Invoke-AtuinSearch"
     "Enable-AtuinSearchKeys"
     "PSConsoleHostReadLine"
@@ -282,8 +347,8 @@ $MyInvocation.MyCommand.ScriptBlock.Module.OnRemove = {
     $env:ATUIN_SESSION = $null
     $env:ATUIN_PID = $null
 
-    if ($null -ne $script:Session) {
-        try { $script:Session.Dispose() } catch {}
-        $script:Session = $null
+    if ($script:SessionInitialized) {
+        try { [AtuinNative.Session]::Shutdown() } catch {}
+        $script:SessionInitialized = $false
     }
 }

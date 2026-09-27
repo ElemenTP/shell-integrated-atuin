@@ -14,6 +14,17 @@
 # The plugin mirrors the official atuin/src/shell/atuin.zsh script, replacing
 # every `atuin <subcommand>` process spawn with an in-process builtin provided
 # by the atuin_native zsh module (zmodload).
+#
+# Official features that need the external `atuin` binary or daemon and are
+# therefore intentionally not provided here:
+#   * tmux popup search (`tmux display-popup` + `atuin search -i`); the
+#     in-process TUI draws in the current terminal and ATUIN_TMUX_POPUP is off.
+#   * `atuin ai inline` natural-language mode (the `?` widget).
+#   * `atuin __internal prepare-search-index` (the in-process search goes
+#     straight to SQLite, so there is no external index to warm).
+# Everything else — hooks, comment-line history, OSC 133 markers, autosuggest
+# strategy, widgets, key bindings and ATUIN_NOBIND — matches the official
+# script.
 
 # Prevent double-loading
 if (( ${+_ATUIN_NATIVE_LOADED} )); then
@@ -86,9 +97,6 @@ if [[ -z "$ATUIN_NATIVE_DIR" ]]; then
 fi
 
 # ---- Load the native module ------------------------------------------------
-# ATUIN_SHELL is read by the Rust history builder while commands are recorded.
-export ATUIN_SHELL="zsh"
-
 module_path=("$ATUIN_NATIVE_DIR" $module_path)
 zmodload atuin_native || {
   print -u2 "atuin-native: failed to load atuin_native from $ATUIN_NATIVE_DIR"
@@ -97,8 +105,41 @@ zmodload atuin_native || {
 
 typeset -g _ATUIN_NATIVE_LOADED=1
 
+# ATUIN_SHELL is read by the Rust history builder while commands are recorded.
+export ATUIN_SHELL="zsh"
+
+# The in-process TUI draws in the current terminal, so the official external
+# `tmux display-popup` search path is unavailable. Declare the popup off, which
+# is what `atuin init zsh` emits when tmux popup support is disabled.
+export ATUIN_TMUX_POPUP=false
+
 autoload -Uz add-zsh-hook
 zmodload zsh/datetime 2>/dev/null
+
+# ---- Autosuggest integration (replaces `atuin search --cmd-only --limit 1`)
+# Mirrors the official atuin.zsh exactly: the strategy function is defined
+# unconditionally and prepended to ZSH_AUTOSUGGEST_STRATEGY, so it also works
+# when this plugin is sourced *before* zsh-autosuggestions (which reads the
+# variable when it loads). Users override it by adding their own config after
+# sourcing the plugin, just like with the official script.
+# The builtin uses the ATUIN_SEARCH_RESULT parameter (set by atuin_search_prefix)
+# to avoid command substitution, which would fork and corrupt the in-process
+# tokio runtime. `atuin_search_prefix` is exactly the official
+# `atuin search --cmd-only --author '$all-user' --limit 1 --search-mode prefix`.
+_zsh_autosuggest_strategy_atuin_native() {
+    # Silence errors, since we don't want to spam the terminal prompt while typing.
+    local ATUIN_SEARCH_QUERY="$1"
+    local ATUIN_SEARCH_LIMIT=1
+    ATUIN_SEARCH_RESULT=""
+    atuin_search_prefix >/dev/null 2>&1
+    typeset -g suggestion="${ATUIN_SEARCH_RESULT:-}"
+}
+
+if [[ -n "${ZSH_AUTOSUGGEST_STRATEGY:-}" ]]; then
+    ZSH_AUTOSUGGEST_STRATEGY=("atuin_native" "${ZSH_AUTOSUGGEST_STRATEGY[@]}")
+else
+    ZSH_AUTOSUGGEST_STRATEGY=("atuin_native")
+fi
 
 # ---- Session ID (replaces `ATUIN_SESSION=$(atuin uuid)`) -------------------
 # The builtin writes $ATUIN_SESSION as a zsh parameter; command substitution is
@@ -115,18 +156,28 @@ fi
 
 ATUIN_HISTORY_ID=""
 
-# ---- OSC 133 markers (optional, identical to official atuin.zsh) -----------
+# ---- PTY proxy ownership (mirrors the official atuin.zsh) ------------------
+# The official script asks `atuin __internal pty-proxy-active` whether this
+# terminal is the child of a live PTY proxy. In-process there is no external
+# binary to ask, so ATUIN_PTY_PROXY_ACTIVE is taken as the marker; a value set
+# by the PTY proxy preamble wins (the preamble sets __atuin_pty_proxy_owns_tty
+# before this file is sourced).
+if [[ -z ${__atuin_pty_proxy_owns_tty-} ]]; then
+    __atuin_pty_proxy_owns_tty=0
+    [[ -n "${ATUIN_PTY_PROXY_ACTIVE-}" ]] && __atuin_pty_proxy_owns_tty=1
+fi
+
+# ---- OSC 133 markers (identical to official atuin.zsh) ---------------------
 __atuin_osc133_command_executed() {
-    [[ -n "${ATUIN_PTY_PROXY_ACTIVE:-}" ]] || return 0
+    [[ "${__atuin_pty_proxy_owns_tty:-0}" = 1 ]] || return 0
     [[ -n "${ATUIN_HISTORY_ID:-}" ]] || return 0
     printf '\033]133;C\a'
 }
 
 __atuin_osc133_command_finished() {
-    [[ -n "${ATUIN_PTY_PROXY_ACTIVE:-}" ]] || return 0
+    [[ "${__atuin_pty_proxy_owns_tty:-0}" = 1 ]] || return 0
     [[ -n "${ATUIN_HISTORY_ID:-}" ]] || return 0
-    printf '\033]133;D;%s;history_id=%s;session_id=%s\a' \
-        "$1" "$ATUIN_HISTORY_ID" "${ATUIN_SESSION:-}"
+    printf '\033]133;D;%s;history_id=%s\a' "$1" "$ATUIN_HISTORY_ID"
 }
 
 __atuin_osc133_prompt_start=$'%{\033]133;A;cl=line\a%}'
@@ -143,7 +194,7 @@ __atuin_osc133_wrap_prompt() {
     __atuin_rprompt="${__atuin_rprompt//$__atuin_osc133_prompt_start/}"
     __atuin_rprompt="${__atuin_rprompt//$__atuin_osc133_prompt_end/}"
 
-    if [[ -n "${ATUIN_PTY_PROXY_ACTIVE:-}" ]]; then
+    if [[ "${__atuin_pty_proxy_owns_tty:-0}" = 1 ]]; then
         PROMPT="${__atuin_osc133_prompt_start}${__atuin_prompt}"
         RPROMPT="${__atuin_rprompt}${__atuin_osc133_prompt_end}"
     else
@@ -153,39 +204,42 @@ __atuin_osc133_wrap_prompt() {
 }
 
 # ---- Preexec hook (replaces `atuin history start --hook`) ------------------
-# The builtin writes ATUIN_HISTORY_ID as a zsh parameter; stdout is discarded.
+# The builtin writes ATUIN_HISTORY_ID as a zsh parameter; no stdout needed.
 # NOTE: must NOT use $(...) here — command substitution forks and the fork
 # guard would reject the call.
 _atuin_native_preexec() {
-    __atuin_preexec_time=${EPOCHREALTIME-}
-
+    local ATUIN_HISTORY_COMMAND="$1"
+    local ATUIN_HISTORY_CWD="$PWD"
     ATUIN_HISTORY_ID=""
-    atuin_history_start "$1" "$PWD" >/dev/null 2>&1
+    atuin_history_start >/dev/null 2>&1
     export ATUIN_HISTORY_ID="${ATUIN_HISTORY_ID:-}"
-
     __atuin_osc133_command_executed
+    __atuin_preexec_time=${EPOCHREALTIME-}
 }
 
 # ---- Precmd hook (replaces `atuin history end &`) --------------------------
 _atuin_native_precmd() {
-    local EXIT="$?"
+    local EXIT="$?" __atuin_precmd_time=${EPOCHREALTIME-}
 
     __atuin_osc133_wrap_prompt
 
     [[ -z "${ATUIN_HISTORY_ID:-}" ]] && return
 
     local duration=""
-    if [[ -n "${__atuin_preexec_time:-}" && -n "${EPOCHREALTIME:-}" ]]; then
+    if [[ -n "${__atuin_preexec_time:-}" && -n "${__atuin_precmd_time:-}" ]]; then
         printf -v duration %.0f \
-            $(( (EPOCHREALTIME - __atuin_preexec_time) * 1000000000 ))
+            $(( (__atuin_precmd_time - __atuin_preexec_time) * 1000000000 ))
+        ((duration < 0)) && duration=0
     fi
 
     __atuin_osc133_command_finished "$EXIT"
 
     # Fire-and-forget (default), matching `(... atuin history end ... &)`.
-    # Add --sync for debugging:
-    #   atuin_history_end "$ATUIN_HISTORY_ID" "$EXIT" "${duration:-0}" --sync
-    atuin_history_end "$ATUIN_HISTORY_ID" "$EXIT" "${duration:-0}"
+    # Add ATUIN_HISTORY_SYNC=1 for debugging.
+    local ATUIN_HISTORY_EXIT="$EXIT"
+    local ATUIN_HISTORY_DURATION_NS="${duration:-0}"
+    local ATUIN_HISTORY_SYNC=0
+    atuin_history_end
 
     export ATUIN_HISTORY_ID=""
 }
@@ -199,10 +253,18 @@ _atuin_native_zshaddhistory() {
     [[ $line == \#* && $line != *$'\n'* ]] || return 0
 
     local saved_id="${ATUIN_HISTORY_ID:-}"
+    local ATUIN_HISTORY_COMMAND="$line"
+    local ATUIN_HISTORY_CWD="$PWD"
     ATUIN_HISTORY_ID=""
-    atuin_history_start "$line" "$PWD" >/dev/null 2>&1
+    atuin_history_start >/dev/null 2>&1
     local id="${ATUIN_HISTORY_ID:-}"
-    [[ -n "$id" ]] && atuin_history_end "$id" 0 0
+    if [[ -n "$id" ]]; then
+        local ATUIN_HISTORY_EXIT=0
+        local ATUIN_HISTORY_DURATION_NS=0
+        local ATUIN_HISTORY_SYNC=0
+        ATUIN_HISTORY_ID="$id"
+        atuin_history_end
+    fi
     ATUIN_HISTORY_ID="$saved_id"
     return 0
 }
@@ -220,18 +282,6 @@ if [[ -o interactive ]]; then
     add-zsh-hook zshaddhistory _atuin_native_zshaddhistory
 fi
 
-# ---- Autosuggest integration (replaces `atuin search --cmd-only --limit 1`)
-# Uses the ATUIN_SEARCH_RESULT parameter (set by the atuin_search builtin) to
-# avoid command substitution fork, which corrupts the in-process tokio runtime.
-if (( ${+ZSH_AUTOSUGGEST_STRATEGY} )); then
-    _zsh_autosuggest_strategy_atuin_native() {
-        atuin_search "$1" 1 2>/dev/null
-        typeset -g suggestion="${ATUIN_SEARCH_RESULT:-}"
-    }
-
-    ZSH_AUTOSUGGEST_STRATEGY=("atuin_native" "${ZSH_AUTOSUGGEST_STRATEGY[@]}")
-fi
-
 # ---- Interactive search widgets -------------------------------------------
 # The widget calls the in-process full-screen TUI (official
 # `atuin search -i` replacement). The builtin runs inside the shell process —
@@ -242,7 +292,12 @@ _atuin_native_search() {
     zle -I
 
     local __atuin_status
-    atuin_search_interactive "$BUFFER"
+    local ATUIN_SEARCH_QUERY="$BUFFER"
+    # UpArrow / vi widget flags set by the wrappers below (zsh dynamic
+    # scoping: the RHS reads the caller's value before shadowing it).
+    local ATUIN_SEARCH_SHELL_UP_KEY_BINDING="${ATUIN_SEARCH_SHELL_UP_KEY_BINDING:-0}"
+    local ATUIN_SEARCH_KEYMAP_MODE="${ATUIN_SEARCH_KEYMAP_MODE:-auto}"
+    atuin_search_interactive
     __atuin_status=$?
 
     zle reset-prompt
@@ -266,18 +321,31 @@ _atuin_native_search() {
     fi
     return 0
 }
-_atuin_native_search_vicmd() { _atuin_native_search "$@"; }
-_atuin_native_search_viins() { _atuin_native_search "$@"; }
+_atuin_native_search_vicmd() {
+    local ATUIN_SEARCH_KEYMAP_MODE="vim-normal"
+    _atuin_native_search "$@"
+}
+_atuin_native_search_viins() {
+    local ATUIN_SEARCH_KEYMAP_MODE="vim-insert"
+    _atuin_native_search "$@"
+}
 
 _atuin_native_up_search() {
     if [[ ! "$BUFFER" == *$'\n'* ]]; then
+        local ATUIN_SEARCH_SHELL_UP_KEY_BINDING=1
         _atuin_native_search "$@"
     else
         zle up-line
     fi
 }
-_atuin_native_up_search_vicmd() { _atuin_native_up_search "$@"; }
-_atuin_native_up_search_viins() { _atuin_native_up_search "$@"; }
+_atuin_native_up_search_vicmd() {
+    local ATUIN_SEARCH_KEYMAP_MODE="vim-normal"
+    _atuin_native_up_search "$@"
+}
+_atuin_native_up_search_viins() {
+    local ATUIN_SEARCH_KEYMAP_MODE="vim-insert"
+    _atuin_native_up_search "$@"
+}
 
 if [[ -o interactive ]]; then
     zle -N atuin-search _atuin_native_search
@@ -290,10 +358,12 @@ if [[ -o interactive ]]; then
     # Compatibility widget names for atuin <= 17.2.1 users.
     zle -N _atuin_search_widget _atuin_native_search
     zle -N _atuin_up_search_widget _atuin_native_up_search
+fi
 
-    # Same default key bindings as `atuin init zsh` (see atuin_orig.zsh).
-    # The official init script binds these unconditionally; without them the
-    # widgets are registered but Ctrl+R / Up never reach the TUI.
+# Same default key bindings as `atuin init zsh` (see atuin_orig.zsh). The
+# official init skips them when ATUIN_NOBIND is set, so users who bind the
+# widgets themselves can opt out in the same way.
+if [[ -o interactive ]] && [[ -z "${ATUIN_NOBIND:-}" ]]; then
     bindkey -M emacs '^r' atuin-search
     bindkey -M viins '^r' atuin-search-viins
     bindkey -M vicmd '/' atuin-search

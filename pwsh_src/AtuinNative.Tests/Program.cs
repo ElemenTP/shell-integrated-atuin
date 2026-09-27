@@ -58,64 +58,137 @@ Directory.CreateDirectory(dataDir);
 
 try
 {
-    // ── Static metadata ────────────────────────────────────────────────
-    CheckEqual(AtuinSession.VersionStr(), "0.1.0", "native version");
-    Check(AtuinSession.LastError() is null, "last error is initially null");
+    // ── Isolated settings tree ─────────────────────────────────────────
+    // atuin_init takes no data directory: sessions follow the same
+    // settings resolution as the official CLI. Point the settings tree at the
+    // temp directory so the tests never touch the real ~/.config/atuin.
+    string configDir = Path.Combine(dataDir, "config");
+    Directory.CreateDirectory(configDir);
+    File.WriteAllText(
+        Path.Combine(configDir, "config.toml"),
+        $"data_dir = \"{dataDir.Replace('\\', '/')}\"\n");
+    AtuinEnvironment.Set("ATUIN_CONFIG_DIR", configDir);
+    AtuinEnvironment.Set("ATUIN_DATA_DIR", dataDir);
 
-    // ── Environment helper ─────────────────────────────────────────────
-    AtuinEnvironment.Set("ATUIN_NATIVE_TEST_VAR", "hello-native");
-    CheckEqual(AtuinEnvironment.Get("ATUIN_NATIVE_TEST_VAR"), "hello-native", "environment Set/Get round-trip");
-    AtuinEnvironment.Remove("ATUIN_NATIVE_TEST_VAR");
-    Check(AtuinEnvironment.Get("ATUIN_NATIVE_TEST_VAR") is null, "environment Remove");
+    // ── Static metadata ────────────────────────────────────────────────
+    CheckEqual(Session.Version(), "0.1.0", "native version");
 
     // ── Session lifecycle ──────────────────────────────────────────────
-    using (var session = new AtuinSession(dataDir))
+    Session.Initialize();
+    try
     {
-        string uuid1 = session.SessionUuid();
-        string uuid2 = session.SessionUuid();
+        string uuid1 = Session.SessionUuid();
+        string uuid2 = Session.SessionUuid();
         Check(!string.IsNullOrEmpty(uuid1), "session UUID non-empty");
         CheckEqual(uuid1, uuid2, "session UUID stable");
 
+        // The library owns a single process-wide session; a second Initialize is
+        // idempotent and keeps that session.
+        Session.Initialize();
+        CheckEqual(Session.SessionUuid(), uuid2,
+            "second Initialize keeps the active session");
+
         // ── History round-trip ──────────────────────────────────────────
-        string id = session.HistoryStart("echo csharp-unit-test", "/tmp");
+        string id = Session.HistoryStart("echo csharp-unit-test", "/tmp");
         Check(!string.IsNullOrEmpty(id), "HistoryStart returns an ID");
-        session.HistoryEnd(id, 0, 987654, sync: true);
+        Session.HistoryEnd(id, 0, 987654, sync: true);
         Check(true, "HistoryEnd sync completes");
 
-        string[] results = session.SearchPrefix("echo csharp-unit-test", 5);
+        string[] results = Session.SearchPrefix("echo csharp-unit-test", 5);
         Check(results.Length == 1 && results[0] == "echo csharp-unit-test",
             "SearchPrefix finds recorded command");
 
-        string[] limited = session.SearchPrefix("echo csharp-unit-test", 1);
+        var genericOptions = new AtuinSearchOptions {
+            Query = "echo csharp-unit-test",
+            SearchMode = AtuinSearchMode.Prefix,
+            Limit = 5,
+            Authors = new[] { "$all-user" },
+        };
+        string[] generic = Session.Search(genericOptions);
+        Check(generic.Length == 1 && generic[0] == "echo csharp-unit-test",
+            "Search with upstream-compatible options finds recorded command");
+
+        // ── author_kind / repeatable exit filters ───────────────────────
+        string agentId = Session.HistoryStart(
+            "echo csharp-agent-kind", "/tmp", "claude", AtuinAuthorKind.Agent, "why");
+        Session.HistoryEnd(agentId, 0, 0, sync: true);
+        var agentFilter = new AtuinSearchOptions {
+            Query = "echo csharp-agent-kind",
+            SearchMode = AtuinSearchMode.Prefix,
+            Authors = new[] { "$all-agent" },
+        };
+        Check(Session.Search(agentFilter).Length == 1,
+            "stated agent author_kind is recorded");
+
+        string exitId = Session.HistoryStart("echo csharp-exit-filter", "/tmp");
+        Session.HistoryEnd(exitId, 7, 0, sync: true);
+        var includeExit = new AtuinSearchOptions {
+            Query = "echo csharp-exit-filter",
+            SearchMode = AtuinSearchMode.Prefix,
+            Exits = new long[] { 7, 130 },
+        };
+        Check(Session.Search(includeExit).Length == 1,
+            "repeatable --exit includes a matching code");
+        var excludeExit = new AtuinSearchOptions {
+            Query = "echo csharp-exit-filter",
+            SearchMode = AtuinSearchMode.Prefix,
+            ExcludeExits = new long[] { 7 },
+        };
+        Check(Session.Search(excludeExit).Length == 0,
+            "repeatable --exclude-exit drops a matching code");
+
+        string[] limited = Session.SearchPrefix("echo csharp-unit-test", 1);
         CheckEqual(limited.Length, 1, "SearchPrefix limit=1");
 
-        string[] none = session.SearchPrefix("no-such-command-xyz", 5);
+        string[] none = Session.SearchPrefix("no-such-command-xyz", 5);
         CheckEqual(none.Length, 0, "SearchPrefix missing query returns empty");
 
-        string[] zero = session.SearchPrefix("echo csharp-unit-test", 0);
+        string[] zero = Session.SearchPrefix("echo csharp-unit-test", 0);
         CheckEqual(zero.Length, 0, "SearchPrefix limit=0 returns empty");
 
-        // ── Argument validation ─────────────────────────────────────────
-        Throws<ArgumentNullException>(() => session.HistoryStart(null!), "HistoryStart rejects null command");
-        Throws<ArgumentNullException>(() => session.HistoryEnd(null!, 0, 0, true), "HistoryEnd rejects null id");
+        // ── Call-local errors: a failed call returns its own error and the
+        // session keeps working afterwards.
+        Throws<InvalidOperationException>(
+            () => Session.HistoryEnd("not-a-uuid", 0, 0, true),
+            "HistoryEnd returns an error string for an invalid ID");
+        string afterError = Session.HistoryStart("echo after-call-local-error", "/tmp");
+        Session.HistoryEnd(afterError, 0, 0, sync: true);
+        Check(true, "session still works after a failed call");
+
+        // ── Session stats ───────────────────────────────────────────────
+        AtuinStats stats = Session.GetStats();
+        Check(stats.HistoryStarts >= 1, "stats counts history starts");
+        Check(stats.HistoryEndsSync >= 1, "stats counts sync history ends");
+        Check(stats.SearchPrefixCalls >= 1, "stats counts prefix searches");
+        Check(stats.SearchCalls >= stats.SearchPrefixCalls, "stats search total covers prefix");
+        Check(!string.IsNullOrEmpty(Session.GetStatsReport()), "stats report is non-empty");
+    }
+    finally
+    {
+        Session.Shutdown();
     }
 
-    // ── Disposed behavior ──────────────────────────────────────────────
-    var disposed = new AtuinSession(dataDir);
-    disposed.Dispose();
-    disposed.Dispose(); // must be idempotent
-    Check(true, "double Dispose is safe");
-    Throws<ObjectDisposedException>(() => disposed.SearchPrefix("echo", 1), "SearchPrefix after Dispose throws");
-    Throws<ObjectDisposedException>(() => disposed.SearchInteractive("echo"), "SearchInteractive after Dispose throws");
+    // ── Shutdown is idempotent; calls without a session are rejected ────
+    Session.Shutdown();
+    Session.Shutdown(); // must be idempotent
+    Check(true, "double Shutdown is safe");
+    Throws<InvalidOperationException>(
+        () => Session.SearchPrefix("echo", 1), "SearchPrefix without a session throws");
+    Throws<InvalidOperationException>(
+        () => Session.SearchInteractive("echo"), "SearchInteractive without a session throws");
 
-    // ── Multiple independent sessions ───────────────────────────────────
+    // ── Repeated create/shutdown cycles ─────────────────────────────────
     for (int i = 0; i < 3; i++)
     {
-        using var s = new AtuinSession(dataDir);
-        string id = s.HistoryStart($"echo multi-session-{i}", "/tmp");
-        s.HistoryEnd(id, 0, 0, sync: true);
+        Session.Initialize();
+        AtuinStats fresh = Session.GetStats();
+        Check(fresh.HistoryStarts == 0 && fresh.SearchCalls == 0,
+            $"re-created session {i} starts with zero stats");
+        string id = Session.HistoryStart($"echo multi-session-{i}", "/tmp");
+        Session.HistoryEnd(id, 0, 0, sync: true);
+        Session.Shutdown();
     }
-    Check(true, "multiple independent sessions");
+    Check(true, "repeated create/shutdown cycles");
 }
 finally
 {
