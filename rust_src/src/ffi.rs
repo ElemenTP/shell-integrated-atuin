@@ -519,13 +519,18 @@ pub unsafe extern "C" fn atuin_history_start(
 /// fire-and-forget behavior. Async errors are logged by the Atuin session and
 /// are not reflected in the return value.
 ///
+/// `duration_ns` is signed to match the C `long long` declaration and must be
+/// non-negative; a negative value is rejected with an error instead of being
+/// reinterpreted as a huge unsigned duration. 0 means "infer from the start
+/// timestamp", exactly like the official CLI when `--duration` is omitted.
+///
 /// # Safety
 /// `id` must be a valid NUL-terminated C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn atuin_history_end(
     id: *const c_char,
     exit_code: i64,
-    duration_ns: u64,
+    duration_ns: i64,
     sync: c_int,
 ) -> *mut c_char {
     ffi_guard_error!({
@@ -533,6 +538,11 @@ pub unsafe extern "C" fn atuin_history_end(
             return error_string("null argument");
         }
         guard_fork!();
+
+        if duration_ns < 0 {
+            return error_string("duration_ns must not be negative");
+        }
+        let duration_ns = duration_ns as u64;
 
         let id_str = unsafe { CStr::from_ptr(id) }
             .to_str()
@@ -1202,6 +1212,24 @@ mod tests {
         let err = unsafe { atuin_history_end(ptr::null(), 0, 0, 1) };
         assert!(!err.is_null());
         take_error(err);
+    }
+
+    /// A negative duration must be rejected rather than wrapping to a huge
+    /// unsigned value; the C declaration is signed `long long`.
+    #[test]
+    fn test_history_end_rejects_negative_duration() {
+        let _session = TestSession::new();
+        let id = start_test_command("echo negative-duration");
+        let id_c = CString::new(id.as_str()).unwrap();
+
+        for sync in [0, 1] {
+            let err = unsafe { atuin_history_end(id_c.as_ptr(), 0, -1, sync) };
+            let msg = take_error(err);
+            assert!(
+                msg.contains("duration_ns must not be negative"),
+                "unexpected error: {msg}"
+            );
+        }
     }
 
     #[test]

@@ -99,6 +99,7 @@ try {
 
     Initialize-AtuinNativeSession
     $moduleId = [AtuinNative.Session]::HistoryStart("echo pwsh-module-test", "/tmp")
+    if (-not $moduleId) { throw "module HistoryStart returned no ID" }
     [AtuinNative.Session]::HistoryEnd($moduleId, 0, 0, $true)
     $moduleResults = [AtuinNative.Session]::SearchPrefix("echo pwsh-module-test", 5)
     if ($moduleResults.Count -ne 1) { throw "module session search failed" }
@@ -125,14 +126,32 @@ try {
         $restored = Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue
         if ($null -eq $restored) { throw "PSConsoleHostReadLine was not restored after module removal" }
         Write-Host "PASS: PSConsoleHostReadLine restored after module removal"
+
+        $ctrlRHandler = Get-PSReadLineKeyHandler -Chord 'Ctrl+r' | Select-Object -First 1
+        $ctrlR = if ($null -ne $ctrlRHandler) { $ctrlRHandler.Function } else { $null }
+        if ($ctrlR -ne 'ReverseSearchHistory') {
+            throw "Ctrl+r was not restored after module removal (got '$ctrlR')"
+        }
+        $upArrowHandler = Get-PSReadLineKeyHandler -Chord 'UpArrow' | Select-Object -First 1
+        $upArrow = if ($null -ne $upArrowHandler) { $upArrowHandler.Function } else { $null }
+        if ($upArrow -ne 'PreviousHistory') {
+            throw "UpArrow was not restored after module removal (got '$upArrow')"
+        }
+        Write-Host "PASS: Ctrl+r / UpArrow key handlers restored after module removal"
     }
-    Write-Host "PASS: module removed (native session disposed by OnRemove)"
+
+    # OnRemove must dispose the native session, not just unbind the module.
+    $sessionGone = $false
+    try { [AtuinNative.Session]::GetStats() | Out-Null } catch { $sessionGone = $true }
+    if (-not $sessionGone) { throw "native session still alive after module removal" }
+    Write-Host "PASS: native session disposed by OnRemove"
 
     # ---- Module unload/load cycles ----
     for ($i = 1; $i -le 3; $i++) {
         Import-Module $manifestPath -Force
         Initialize-AtuinNativeSession
         $id2 = [AtuinNative.Session]::HistoryStart("echo pwsh-cycle-$i", "/tmp")
+        if (-not $id2) { throw "cycle ${i}: HistoryStart returned no ID" }
         [AtuinNative.Session]::HistoryEnd($id2, 0, 0, $true)
         Remove-Module atuin-native -Force
         Write-Host "PASS: module cycle $i"

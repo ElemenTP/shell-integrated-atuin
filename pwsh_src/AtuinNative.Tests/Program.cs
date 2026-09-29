@@ -46,6 +46,17 @@ void Throws<TException>(Action action, string message) where TException : Except
     }
 }
 
+// HistoryStart returns null when Atuin's filters drop a command; the tests
+// below record ordinary commands and therefore require an ID.
+string RequireId(string? id)
+{
+    if (string.IsNullOrEmpty(id))
+    {
+        throw new InvalidOperationException("expected a history ID");
+    }
+    return id;
+}
+
 string ffiPath = Environment.GetEnvironmentVariable("ATUIN_FFI_PATH")
     ?? throw new InvalidOperationException("ATUIN_FFI_PATH must point at libatuin_ffi.so / .dylib / atuin_ffi.dll");
 if (!File.Exists(ffiPath))
@@ -89,7 +100,7 @@ try
             "second Initialize keeps the active session");
 
         // ── History round-trip ──────────────────────────────────────────
-        string id = Session.HistoryStart("echo csharp-unit-test", "/tmp");
+        string id = RequireId(Session.HistoryStart("echo csharp-unit-test", "/tmp"));
         Check(!string.IsNullOrEmpty(id), "HistoryStart returns an ID");
         Session.HistoryEnd(id, 0, 987654, sync: true);
         Check(true, "HistoryEnd sync completes");
@@ -109,8 +120,8 @@ try
             "Search with upstream-compatible options finds recorded command");
 
         // ── author_kind / repeatable exit filters ───────────────────────
-        string agentId = Session.HistoryStart(
-            "echo csharp-agent-kind", "/tmp", "claude", AtuinAuthorKind.Agent, "why");
+        string agentId = RequireId(Session.HistoryStart(
+            "echo csharp-agent-kind", "/tmp", "claude", AtuinAuthorKind.Agent, "why"));
         Session.HistoryEnd(agentId, 0, 0, sync: true);
         var agentFilter = new AtuinSearchOptions {
             Query = "echo csharp-agent-kind",
@@ -120,7 +131,7 @@ try
         Check(Session.Search(agentFilter).Length == 1,
             "stated agent author_kind is recorded");
 
-        string exitId = Session.HistoryStart("echo csharp-exit-filter", "/tmp");
+        string exitId = RequireId(Session.HistoryStart("echo csharp-exit-filter", "/tmp"));
         Session.HistoryEnd(exitId, 7, 0, sync: true);
         var includeExit = new AtuinSearchOptions {
             Query = "echo csharp-exit-filter",
@@ -151,9 +162,25 @@ try
         Throws<InvalidOperationException>(
             () => Session.HistoryEnd("not-a-uuid", 0, 0, true),
             "HistoryEnd returns an error string for an invalid ID");
-        string afterError = Session.HistoryStart("echo after-call-local-error", "/tmp");
+        string afterError = RequireId(Session.HistoryStart("echo after-call-local-error", "/tmp"));
         Session.HistoryEnd(afterError, 0, 0, sync: true);
         Check(true, "session still works after a failed call");
+
+        // ── Input validation ────────────────────────────────────────────
+        Throws<ArgumentOutOfRangeException>(
+            () => Session.HistoryEnd(id, 0, -1, sync: true),
+            "HistoryEnd rejects a negative duration");
+        Throws<ArgumentOutOfRangeException>(
+            () => Session.Search(new AtuinSearchOptions { Query = "echo", Limit = -1 }),
+            "Search rejects a negative limit");
+        Throws<ArgumentOutOfRangeException>(
+            () => Session.Search(new AtuinSearchOptions { Query = "echo", Offset = -5 }),
+            "Search rejects a negative offset");
+
+        // A command dropped by Atuin's filters is a successful call with no ID,
+        // not an error. A leading space is filtered out by default.
+        string? filtered = Session.HistoryStart(" filtered-out", "/tmp");
+        Check(filtered is null, "HistoryStart returns null for a filtered command");
 
         // ── Session stats ───────────────────────────────────────────────
         AtuinStats stats = Session.GetStats();
@@ -184,7 +211,7 @@ try
         AtuinStats fresh = Session.GetStats();
         Check(fresh.HistoryStarts == 0 && fresh.SearchCalls == 0,
             $"re-created session {i} starts with zero stats");
-        string id = Session.HistoryStart($"echo multi-session-{i}", "/tmp");
+        string id = RequireId(Session.HistoryStart($"echo multi-session-{i}", "/tmp"));
         Session.HistoryEnd(id, 0, 0, sync: true);
         Session.Shutdown();
     }

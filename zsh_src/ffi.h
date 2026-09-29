@@ -53,7 +53,9 @@ char *atuin_history_start(const char *command, const char *cwd,
                           const char *author, const char *author_kind,
                           const char *intent, char **id_out);
 /* sync=1 blocks until done and returns an error string on failure; sync=0 is
- * fire-and-forget and returns NULL once the work is scheduled. */
+ * fire-and-forget and returns NULL once the work is scheduled.
+ * duration_ns must be non-negative (0 means "infer from the start timestamp");
+ * a negative value returns an error string. */
 char *atuin_history_end(const char *id, long long exit_code,
                         long long duration_ns, int sync);
 

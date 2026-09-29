@@ -119,6 +119,52 @@ class PwshPty:
         os.close(self.master)
 
 
+def check_readline_wrapper(dll_dir: str) -> bool:
+    """Regression check for the fresh-shell PSConsoleHostReadLine wrapper.
+
+    The module applies Set-StrictMode -Version Latest. Reading $LASTEXITCODE
+    before strict mode was disabled aborted the wrapper on the first prompt of
+    a fresh shell (no native command had run yet), which silently disabled
+    history recording when $ErrorActionPreference was 'Stop'. Run the real
+    wrapper in exactly that state and verify the session recorded the command.
+    """
+    data_dir = tempfile.mkdtemp(prefix="atuin-pwsh-readline-")
+    config_dir = os.path.join(data_dir, "config")
+    os.makedirs(config_dir, exist_ok=True)
+    with open(os.path.join(config_dir, "config.toml"), "w", encoding="utf-8") as handle:
+        handle.write(f'data_dir = "{data_dir}"\n')
+
+    shell = PwshPty(dll_dir, data_dir)
+    try:
+        shell.wait_for(b"> ", timeout=20)
+        time.sleep(0.5)
+        shell.run_command(
+            "$ErrorActionPreference='Stop'; "
+            "Write-Output ('NOSET:'+[string](Test-Path variable:global:LASTEXITCODE))",
+            b"NOSET:False",
+        )
+        shell.run_command(
+            f"Import-Module '{dll_dir}/atuin-native.psd1' -Force; Write-Output 'IMPORTED'",
+            b"IMPORTED",
+        )
+        time.sleep(0.3)
+        shell.send("echo wrapper-probe\r")
+        time.sleep(1.0)
+        shell.send(
+            "Write-Output ('WRAPPEROK:'+[string]"
+            "([AtuinNative.Session]::GetStats().HistoryStarts -ge 1))\r"
+        )
+        shell.wait_for(b"WRAPPEROK:True", timeout=10)
+        return True
+    except Exception:  # noqa: BLE001 - caller reports the failure
+        print("--- fresh-shell wrapper output (plain) ---")
+        print(shell.plain()[-2000:].decode("utf-8", "replace"))
+        return False
+    finally:
+        shell.close()
+        shutil.rmtree(data_dir, ignore_errors=True)
+
+
 def main() -> int:
     dll_dir = os.environ.get("DLL_DIR")
     if not dll_dir:
@@ -139,6 +185,11 @@ def main() -> int:
     )
     if not all(os.path.isfile(path) for path in required):
         print(f"FAIL: expected module files not found in {dll_dir}: {required}")
+        return 1
+
+    # ---- 0. Fresh-shell PSConsoleHostReadLine wrapper (strict-mode regression)
+    if not check_readline_wrapper(dll_dir):
+        print("FAIL: PSConsoleHostReadLine wrapper did not record history in a fresh shell")
         return 1
 
     data_dir = tempfile.mkdtemp(prefix="atuin-pwsh-tui-")

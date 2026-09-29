@@ -161,9 +161,10 @@ zsh 以下场景会 `fork()` 且不 exec：
 ```rust
 struct SessionHandle {
     session: Session,
-    creator_pid: u32,
     uuid: CString,
 }
+// 创建时的 PID 放在锁外的原子变量里，fork 子进程无需先拿锁即可被拒绝
+static SESSION_PID: AtomicU32 = AtomicU32::new(0);
 ```
 
 所有会触碰 tokio runtime 的入口先比较 `std::process::id()`。
@@ -257,8 +258,8 @@ zsh 侧由 `ATUIN_SEARCH_SHELL_UP_KEY_BINDING` / `ATUIN_SEARCH_KEYMAP_MODE` 参�
 `history_start` / `history_end`(sync+async) / `search` / `search_prefix` /
 `search_interactive_tui` 的关键点自增，`Session::stats()` 汇总为 `SessionStats`
 快照（含 `in_flight_history_ends` 与 uptime）。FFI 导出 `atuin_stats(atuin_stats_t*)`
-填充 C struct；zsh builtin `atuin_stats` 写 `ATUIN_STATS_*` 参数并（除非
-`ATUIN_STATS_QUIET`）打印摘要，`ATUIN_STATS_VERBOSE` 追加 interactive 明细；
+填充 C struct；zsh builtin `atuin_stats` 写 `ATUIN_STATS_*` 参数并（除非 argv
+传 `-q`）打印摘要，argv `-v` 追加 interactive 明细；
 C# 侧 `AtuinSession.GetStats()` / `GetStatsReport()`，psm1 提供
 `Get-AtuinNativeStats`。因为计数器属于 session，destroy→create 后从零开始。
 
@@ -320,12 +321,13 @@ static void set_str_param(const char *name, const char *val) {
 }
 ```
 
-### 3.3 零参数 builtin：用 zsh 变量交换输入输出
+### 3.3 变量传参的 builtin：用 zsh 变量交换输入输出
 
-`module.c` 与 starship/zoxide 的 native 模块保持一致：builtin 不接收
-argv，所有输入来自 zsh 参数，所有结果写回 zsh 参数。C 代码不再自行解析
-`--search-mode`/`--sync`/limit 等参数，复杂 argv 解析由调用侧（zsh 脚本）
-用变量表达：
+`module.c` 与 starship/zoxide 的 native 模块保持一致：history/search 类
+builtin 不接收 argv，所有输入来自 zsh 参数，所有结果写回 zsh 参数；只有
+`atuin_stats` / `atuin_version` 额外接受 `-v`/`-q` 这类纯显示标志。C 代码
+不再自行解析 `--search-mode`/`--sync`/limit 等业务参数，复杂 argv 解析由
+调用侧（zsh 脚本）用变量表达：
 
 ```zsh
 # history start
@@ -349,12 +351,16 @@ atuin_history_end
 | `atuin_history_start` | `ATUIN_HISTORY_COMMAND`, `ATUIN_HISTORY_CWD`, `ATUIN_HISTORY_AUTHOR`, `ATUIN_HISTORY_AUTHOR_KIND`, `ATUIN_HISTORY_INTENT` | `ATUIN_HISTORY_ID` |
 | `atuin_history_end` | `ATUIN_HISTORY_ID`, `ATUIN_HISTORY_EXIT`, `ATUIN_HISTORY_DURATION_NS`, `ATUIN_HISTORY_SYNC` | — |
 | `atuin_search` | `ATUIN_SEARCH_QUERY`, `ATUIN_SEARCH_MODE`, `ATUIN_SEARCH_FILTER_MODE`, `ATUIN_SEARCH_CWD`, `ATUIN_SEARCH_EXCLUDE_CWD`, `ATUIN_SEARCH_EXITS`, `ATUIN_SEARCH_EXCLUDE_EXITS`, `ATUIN_SEARCH_BEFORE`, `ATUIN_SEARCH_AFTER`, `ATUIN_SEARCH_LIMIT`, `ATUIN_SEARCH_OFFSET`, `ATUIN_SEARCH_REVERSE`, `ATUIN_SEARCH_INCLUDE_DUPLICATES`, `ATUIN_SEARCH_AUTHORS`, `ATUIN_SEARCH_SHELLS` | `ATUIN_SEARCH_RESULT` |
-| `atuin_search_interactive` | `ATUIN_SEARCH_QUERY` | `ATUIN_SEARCH_SELECTED` |
+| `atuin_search_interactive` | `ATUIN_SEARCH_QUERY`, `ATUIN_SEARCH_SHELL_UP_KEY_BINDING`, `ATUIN_SEARCH_KEYMAP_MODE` | `ATUIN_SEARCH_SELECTED` |
+| `atuin_stats` | （无输入参数；可选 argv `-v`/`-q`） | `ATUIN_STATS_*` |
+| `atuin_session_id` | — | `ATUIN_SESSION` |
+| `atuin_version` | （可选 argv `-q`） | `ATUIN_VERSION` |
 
 `ATUIN_SEARCH_MODE` / `ATUIN_SEARCH_FILTER_MODE` 使用与 CLI 相同的字符串
 （`prefix`、`fuzzy`、`global`、`session` 等）；`ATUIN_SEARCH_AUTHORS` /
 `ATUIN_SEARCH_SHELLS` / `ATUIN_SEARCH_EXITS` / `ATUIN_SEARCH_EXCLUDE_EXITS` 是
-zsh 数组，分别对应上游可重复的 `--author` / `--shell` / `--exit` /
+zsh 数组（也接受标量，按单元素数组处理），分别对应上游可重复的 `--author` /
+`--shell` / `--exit` /
 `--exclude-exit`。`ATUIN_HISTORY_AUTHOR_KIND` 取 `user`/`agent`
 （大小写不敏感），对应 `atuin history start --author-kind`。这样官方 autosuggest 的
 `--author '$all-user' --search-mode prefix` 在 zsh 侧就是：

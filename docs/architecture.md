@@ -167,9 +167,9 @@ NULL，避免调用方持有上一次成功调用的悬垂指针。错误信息�
 
 | 机制 | 目的 |
 | --- | --- |
-| 进程级单 session（`Mutex<Option<Session>>`） | Atuin client 层的数据目录/meta store 是进程级全局状态，只对一个 session 成立。FFI 在库内串行化所有调用，第二个 create 报错 |
+| 进程级单 session（`Mutex<Option<Session>>`） | Atuin client 层的数据目录/meta store 是进程级全局状态，只对一个 session 成立。FFI 在库内串行化所有调用；`atuin_init` 幂等（已有 session 时成功并保留它） |
 | 调用锁 | `search_interactive` 在 TUI 期间持锁；`history_end(sync=0)` 的 spawned future 只用克隆的 Arc，调用返回即释放锁 |
-| Fork guard（`creator_pid`） | zsh 的 `$()`、`&`、管道非末位、子 shell 会 fork 不 exec；子进程继承损坏的 tokio runtime。FFI 检测 PID 变化并返回错误 |
+| Fork guard（`SESSION_PID`） | zsh 的 `$()`、`&`、管道非末位、子 shell 会 fork 不 exec；子进程继承损坏的 tokio runtime。FFI 检测 PID 变化并返回错误 |
 | multi-thread tokio runtime + 显式 SQLite pool close | `history_end` 的 fire-and-forget 在 worker 线程执行，precmd builtin 不再阻塞；destroy 时在 runtime 内 join 在途任务并关闭 history/records/meta 三个 sqlx pool，再关闭 tokio runtime |
 | destroy 时重置进程级缓存 | `Settings::shutdown_process_state()` 清空 `DATA_DIR` / `META_CONFIG`（否则 destroy→create 会沿用上一次的目录，导致 history/records 与 meta.db 分裂）；`reset_tui_input()` 释放 TUI 缓存的终端句柄与残留输入 |
 | 返回值错误协议（无全局错误槽） | 错误字符串随每次调用返回并由调用方释放，没有共享可变状态、没有 TLS/全局析构器，可在 `dlclose` 后安全卸载 |
@@ -178,9 +178,10 @@ NULL，避免调用方持有上一次成功调用的悬垂指针。错误信息�
 
 ### 4. zsh 集成契约
 
-zsh 模块提供 8 个 builtin，全部为**零参数 builtin**。输入与输出通过 zsh 参数
-交换（与 starship/zoxide native 模块一致），C shim 不解析 argv；插件绝不使用
-`$(...)`（命令替换会 fork）：
+zsh 模块提供 8 个 builtin。history/search 类 builtin 不接受 argv，输入与输出
+通过 zsh 参数交换（与 starship/zoxide native 模块一致）；只有 `atuin_stats` /
+`atuin_version` 额外接受 `-v`/`-q` 显示标志。插件绝不使用 `$(...)`
+（命令替换会 fork）：
 
 | Builtin | 输入参数 | 输出参数 | 对应官方命令 |
 | --- | --- | --- | --- |
@@ -189,9 +190,9 @@ zsh 模块提供 8 个 builtin，全部为**零参数 builtin**。输入与输�
 | `atuin_search` | `ATUIN_SEARCH_QUERY`, `ATUIN_SEARCH_MODE`, `ATUIN_SEARCH_FILTER_MODE`, `ATUIN_SEARCH_CWD`, `ATUIN_SEARCH_EXCLUDE_CWD`, `ATUIN_SEARCH_EXITS`, `ATUIN_SEARCH_EXCLUDE_EXITS`, `ATUIN_SEARCH_BEFORE`, `ATUIN_SEARCH_AFTER`, `ATUIN_SEARCH_LIMIT`, `ATUIN_SEARCH_OFFSET`, `ATUIN_SEARCH_REVERSE`, `ATUIN_SEARCH_INCLUDE_DUPLICATES`, `ATUIN_SEARCH_AUTHORS`, `ATUIN_SEARCH_SHELLS` | `ATUIN_SEARCH_RESULT` | `atuin search` 非交互选项 |
 | `atuin_search_prefix` | `ATUIN_SEARCH_QUERY`, `ATUIN_SEARCH_LIMIT`（默认 1） | `ATUIN_SEARCH_RESULT` | `atuin search --cmd-only --author '$all-user' --search-mode prefix` |
 | `atuin_search_interactive` | `ATUIN_SEARCH_QUERY`, `ATUIN_SEARCH_SHELL_UP_KEY_BINDING`, `ATUIN_SEARCH_KEYMAP_MODE` | `ATUIN_SEARCH_SELECTED` | `atuin search -i [--shell-up-key-binding] [--keymap-mode=…]` |
-| `atuin_stats` | `ATUIN_STATS_VERBOSE`, `ATUIN_STATS_QUIET` | `ATUIN_STATS_*` | `starship_stats` 风格的会话统计 |
+| `atuin_stats` | （无输入参数；可选 argv `-v`/`-q`） | `ATUIN_STATS_*` | `starship_stats` 风格的会话统计 |
 | `atuin_session_id` | — | `ATUIN_SESSION` | `atuin uuid` |
-| `atuin_version` | — | `ATUIN_VERSION` | — |
+| `atuin_version` | （可选 argv `-q`） | `ATUIN_VERSION` | — |
 
 `atuin-native.plugin.zsh` 复刻官方 `atuin.zsh`：
 
@@ -281,10 +282,10 @@ prepare-search-index` 索引预热；PTY proxy 的存活性探测以 `ATUIN_PTY_
 shell-integrated-atuin/
 ├── rust_src/                     # FFI crate (cdylib)
 │   ├── Cargo.toml
-│   └── src/lib.rs, ffi.rs        # C API + 19 个 Rust 单元测试
+│   └── src/lib.rs, ffi.rs        # C API + Rust 单元测试
 ├── zsh_src/                      # zsh 模块
 │   ├── ffi.h               # C 头文件
-│   ├── module.c            # zsh shim（6 个零参数 builtin，变量传参）
+│   ├── module.c            # zsh shim（8 个 builtin，变量传参；stats/version 支持 -v/-q）
 │   ├── atuin-native.plugin.zsh   # zsh 插件入口
 │   └── build/                    # CMake 输出（Debug/Release 子目录）
 ├── pwsh_src/                     # PowerShell 模块

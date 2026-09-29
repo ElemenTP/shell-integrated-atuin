@@ -185,6 +185,33 @@ else
     exit 1
 fi
 
+# A scalar parameter is accepted where a repeatable array is documented:
+# get_arr_param falls back to a one-element array.
+ATUIN_SEARCH_RESULT=""
+ATUIN_SEARCH_QUERY="echo exit-filter zsh"
+ATUIN_SEARCH_MODE="prefix"
+ATUIN_SEARCH_EXITS=7            # scalar, not an array
+atuin_search >/dev/null
+unset ATUIN_SEARCH_EXITS
+if [[ "${ATUIN_SEARCH_RESULT:-}" == *"echo exit-filter zsh"* ]]; then
+    echo "PASS: scalar ATUIN_SEARCH_EXITS behaves as a one-element array"
+else
+    echo "FAIL: scalar ATUIN_SEARCH_EXITS was ignored"
+    exit 1
+fi
+
+ATUIN_SEARCH_RESULT=""
+ATUIN_SEARCH_QUERY="echo agent-kind zsh"
+ATUIN_SEARCH_AUTHORS='$all-agent'   # scalar, not an array
+atuin_search >/dev/null
+unset ATUIN_SEARCH_AUTHORS
+if [[ "${ATUIN_SEARCH_RESULT:-}" == *"echo agent-kind zsh"* ]]; then
+    echo "PASS: scalar ATUIN_SEARCH_AUTHORS behaves as a one-element array"
+else
+    echo "FAIL: scalar ATUIN_SEARCH_AUTHORS was ignored"
+    exit 1
+fi
+
 # Dedicated autosuggest fast path (Session::search_prefix).
 ATUIN_SEARCH_RESULT=""
 ATUIN_SEARCH_QUERY="echo hello zsh"
@@ -197,8 +224,23 @@ else
     exit 1
 fi
 
-# Session statistics.
+# Session statistics. Quiet/verbose are argv flags: ATUIN_STATS_QUIET is a
+# no-op kept here to pin the argv-only interface against future drift.
+stats_out="$ATUIN_DATA_DIR/stats.out"
 ATUIN_STATS_QUIET=1
+atuin_stats > "$stats_out" 2>&1
+if [[ ! -s "$stats_out" ]]; then
+    echo "FAIL: ATUIN_STATS_QUIET unexpectedly suppressed the summary (argv-only)"
+    exit 1
+fi
+atuin_stats -q > "$stats_out" 2>&1
+if [[ -s "$stats_out" ]]; then
+    echo "FAIL: atuin_stats -q still printed a summary"
+    exit 1
+fi
+unset ATUIN_STATS_QUIET
+echo "PASS: atuin_stats quiet is an argv flag (-q)"
+
 atuin_stats >/dev/null
 if [[ "${ATUIN_STATS_HISTORY_STARTS:-0}" -ge 1 &&
       "${ATUIN_STATS_SEARCH_PREFIX_CALLS:-0}" -ge 1 &&

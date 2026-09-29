@@ -79,7 +79,10 @@ public static class Session
     /// <paramref name="intent"/> mirror
     /// <c>atuin history start --author / --author-kind / --intent</c>.
     /// </summary>
-    public static string HistoryStart(
+    /// <returns>The history ID, or <see langword="null"/> when Atuin's
+    /// exclusion filters dropped the command (there is then nothing to
+    /// finalize).</returns>
+    public static string? HistoryStart(
         string command,
         string cwd = "",
         string? author = null,
@@ -96,8 +99,7 @@ public static class Session
         }
         if (idPtr == IntPtr.Zero)
         {
-            throw new InvalidOperationException(
-                "atuin HistoryStart succeeded but produced no history ID");
+            return null;
         }
 
         try
@@ -124,8 +126,18 @@ public static class Session
     /// <param name="sync">When true, block until the database update completes
     /// and throw on failure. When false, schedule fire-and-forget work like
     /// the official `(atuin history end ... &amp;)` shell integration.</param>
+    /// <param name="durationNs">Command duration in nanoseconds. Must be
+    /// non-negative; 0 means "infer from the recorded start timestamp".</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="durationNs"/>
+    /// is negative.</exception>
     public static void HistoryEnd(string id, long exitCode, long durationNs, bool sync = false)
     {
+        if (durationNs < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(durationNs), durationNs, "durationNs must not be negative");
+        }
+
         IntPtr error = NativeMethods.HistoryEnd(id, exitCode, durationNs, sync ? 1 : 0);
         if (error != IntPtr.Zero)
         {
@@ -138,9 +150,22 @@ public static class Session
     /// Run a non-interactive search with upstream-compatible options.
     /// Returns the matching commands.
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><see cref="AtuinSearchOptions.Limit"/>
+    /// or <see cref="AtuinSearchOptions.Offset"/> is negative.</exception>
     public static string[] Search(AtuinSearchOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+
+        if (options.Limit is < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), options.Limit, "Limit must not be negative");
+        }
+        if (options.Offset is < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), options.Offset, "Offset must not be negative");
+        }
 
         var allocated = new List<IntPtr>();
         var arrays = new List<IntPtr>();

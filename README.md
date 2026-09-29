@@ -21,8 +21,7 @@ Native 模式（进程内，0 次 fork）:
              atuin_search_prefix          # builtin，结果写入 $ATUIN_SEARCH_RESULT
   交互式TUI:  ATUIN_SEARCH_QUERY="$BUFFER"
              atuin_search_interactive     # builtin，全屏 TUI，Ctrl+R widget
-  统计:       ATUIN_STATS_VERBOSE=1
-             atuin_stats                  # builtin，写入 $ATUIN_STATS_* 并打印摘要
+  统计:       atuin_stats -v              # builtin，写入 $ATUIN_STATS_* 并打印摘要（-v 含 interactive 明细）
 ```
 
 `Session` 在 shell 进程内常驻，持有 `history.db` / `records.db` 连接、
@@ -162,15 +161,16 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 |------|------|
 | `atuin_history_start` | 读取 `$ATUIN_HISTORY_COMMAND`、`$ATUIN_HISTORY_CWD`、`$ATUIN_HISTORY_AUTHOR`、`$ATUIN_HISTORY_AUTHOR_KIND`（`user`/`agent`）、`$ATUIN_HISTORY_INTENT`，写入 `$ATUIN_HISTORY_ID` |
 | `atuin_history_end` | 读取 `$ATUIN_HISTORY_ID`、`$ATUIN_HISTORY_EXIT`、`$ATUIN_HISTORY_DURATION_NS`、`$ATUIN_HISTORY_SYNC`。默认 fire-and-forget，`ATUIN_HISTORY_SYNC=1` 同步等待并报告错误 |
-| `atuin_search` | 读取 `$ATUIN_SEARCH_QUERY`/`$ATUIN_SEARCH_MODE`/`$ATUIN_SEARCH_FILTER_MODE`/`$ATUIN_SEARCH_LIMIT`/`$ATUIN_SEARCH_AUTHORS`/`$ATUIN_SEARCH_SHELLS`/`$ATUIN_SEARCH_EXITS`/`$ATUIN_SEARCH_EXCLUDE_EXITS` 等（exit 过滤为 zsh 数组，对应上游可重复的 `--exit`/`--exclude-exit`），结果写入 `$ATUIN_SEARCH_RESULT` |
+| `atuin_search` | 读取 `$ATUIN_SEARCH_QUERY`/`$ATUIN_SEARCH_MODE`/`$ATUIN_SEARCH_FILTER_MODE`/`$ATUIN_SEARCH_LIMIT`/`$ATUIN_SEARCH_AUTHORS`/`$ATUIN_SEARCH_SHELLS`/`$ATUIN_SEARCH_EXITS`/`$ATUIN_SEARCH_EXCLUDE_EXITS` 等（exit/author/shell 过滤为 zsh 数组，也接受标量；对应上游可重复的 `--exit`/`--exclude-exit`/`--author`/`--shell`），结果写入 `$ATUIN_SEARCH_RESULT` |
 | `atuin_search_prefix` | autosuggest 快路径：读取 `$ATUIN_SEARCH_QUERY`、`$ATUIN_SEARCH_LIMIT`（默认 1），结果写入 `$ATUIN_SEARCH_RESULT` |
 | `atuin_search_interactive` | 读取 `$ATUIN_SEARCH_QUERY`、`$ATUIN_SEARCH_SHELL_UP_KEY_BINDING`、`$ATUIN_SEARCH_KEYMAP_MODE`（`auto`/`emacs`/`vim-normal`/`vim-insert`），全屏交互式 TUI 搜索（上游完整 TUI），结果写入 `$ATUIN_SEARCH_SELECTED`；返回 0=选中、1=取消、2=错误 |
-| `atuin_stats` | 读取 `$ATUIN_STATS_VERBOSE`/`$ATUIN_STATS_QUIET`，写入 `$ATUIN_STATS_*` 计数并打印摘要（对齐 `starship_stats`） |
+| `atuin_stats` | 可选 `-v`（verbose）/`-q`（quiet）标志，写入 `$ATUIN_STATS_*` 计数并打印摘要（对齐 `starship_stats`） |
 | `atuin_session_id` | 输出并写入 `$ATUIN_SESSION` |
-| `atuin_version` | 输出并写入 `$ATUIN_VERSION` |
+| `atuin_version` | 可选 `-q`，输出并写入 `$ATUIN_VERSION` |
 
-所有 builtin 都**不接受命令行参数**，输入输出全部通过 zsh 参数交换，和
-starship/zoxide native 模块一致。这样 C shim 不需要自己解析 argv；插件只
+history/search 类 builtin **不接受命令行参数**，输入输出全部通过 zsh 参数交换，
+和 starship/zoxide native 模块一致；只有 `atuin_stats` / `atuin_version` 额外
+接受 `-v`/`-q` 这类纯显示标志。这样 C shim 不需要解析业务 argv；插件只
 设置变量再调用 builtin，也不使用命令替换。
 
 **fork 安全**：在 `$(...)`、`&`、管道非末位、子 shell 中调用 builtin 时，

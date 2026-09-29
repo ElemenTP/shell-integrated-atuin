@@ -37,55 +37,72 @@ atuin_history_start >/dev/null 2>&1
 id="${ATUIN_HISTORY_ID:-}"
 [[ -n "$id" ]] && echo "PASS: history_start in parent" || { echo "FAIL: start"; exit 1; }
 
-# ---- $() command substitution (fork guard must reject) ----
+# ---- Forked contexts (the guard must actually reject, not merely survive) ----
+#
+# zsh forks for $(), &, non-final pipeline stages, subshells and process
+# substitution. In each child the FFI fork guard must refuse the call with
+# "refusing call in forked child process" on stderr; touching the inherited
+# tokio runtime would corrupt it.
+errfile="$ATUIN_DATA_DIR/fork.err"
+: > "$errfile"
+
+expect_fork_rejected() {
+    local label="$1" tries=0
+    while (( tries < 100 )); do
+        if grep -q "forked child process" "$errfile" 2>/dev/null; then
+            break
+        fi
+        sleep 0.02
+        (( tries++ )) || true
+    done
+    if ! grep -q "forked child process" "$errfile" 2>/dev/null; then
+        echo "FAIL: $label was not rejected by the fork guard"
+        echo "      stderr: $(cat "$errfile" 2>/dev/null)"
+        exit 1
+    fi
+    echo "PASS: $label rejected by fork guard"
+    : > "$errfile"
+}
+
+# $() command substitution
 ATUIN_HISTORY_COMMAND="echo subshell"
 ATUIN_HISTORY_CWD="/tmp"
-if sub_id=$(atuin_history_start 2>/dev/null); then
-    echo "PASS: \$() survived (fork guard did not reject, len=${#sub_id})"
-else
-    echo "PASS: \$() rejected by fork guard"
-fi
+: > "$errfile"
+sub_id=$(atuin_history_start 2>"$errfile") || true
+expect_fork_rejected '$() command substitution'
 
-# ---- Background job (fork guard rejects; expect non-zero) ----
-(ATUIN_HISTORY_COMMAND="echo background"; ATUIN_HISTORY_CWD="/tmp";  atuin_history_start &>/dev/null) &
+# Background job &
+: > "$errfile"
+(ATUIN_HISTORY_COMMAND="echo background"; ATUIN_HISTORY_CWD="/tmp"; \
+    atuin_history_start 2>"$errfile") &
 bg_pid=$!
-if wait $bg_pid 2>/dev/null; then
-    echo "PASS: background & survived (call went through)"
-else
-    echo "PASS: background & rejected by fork guard"
-fi
+wait $bg_pid 2>/dev/null || true
+expect_fork_rejected 'background &'
 
-# ---- Pipeline, builtin not last stage ----
+# Pipeline, builtin not the last stage
 ATUIN_HISTORY_COMMAND="echo pipeline"
 ATUIN_HISTORY_CWD="/tmp"
-if atuin_history_start 2>/dev/null | cat >/dev/null; then
-    echo "PASS: pipeline survived (call went through)"
-else
-    echo "PASS: pipeline rejected by fork guard"
-fi
+: > "$errfile"
+atuin_history_start 2>"$errfile" | cat >/dev/null || true
+expect_fork_rejected 'pipeline (builtin not last stage)'
 
-# ---- Subshell ( ) ----
-if (ATUIN_HISTORY_COMMAND="echo subshell2"; ATUIN_HISTORY_CWD="/tmp";      atuin_history_start 2>/dev/null); then
-    echo "PASS: subshell survived (call went through)"
-else
-    echo "PASS: subshell rejected by fork guard"
-fi
+# Subshell ( )
+: > "$errfile"
+(ATUIN_HISTORY_COMMAND="echo subshell2"; ATUIN_HISTORY_CWD="/tmp"; \
+    atuin_history_start 2>"$errfile") || true
+expect_fork_rejected 'subshell ( )'
 
-# ---- Process substitution <( ) ----
-if cat <(ATUIN_HISTORY_COMMAND="echo procsubst"; ATUIN_HISTORY_CWD="/tmp";           atuin_history_start 2>/dev/null) >/dev/null 2>&1; then
-    echo "PASS: process substitution survived"
-else
-    echo "PASS: process substitution rejected by fork guard"
-fi
+# Process substitution <( )
+: > "$errfile"
+cat <(ATUIN_HISTORY_COMMAND="echo procsubst"; ATUIN_HISTORY_CWD="/tmp"; \
+    atuin_history_start 2>"$errfile") >/dev/null 2>&1 || true
+expect_fork_rejected 'process substitution <( )'
 
-# ---- Nested command substitution ----
-ATUIN_HISTORY_COMMAND="echo nested"
-ATUIN_HISTORY_CWD="/tmp"
-if outer=$(echo $(atuin_history_start 2>/dev/null)); then
-    echo "PASS: nested \$() survived"
-else
-    echo "PASS: nested \$() rejected by fork guard"
-fi
+# Nested command substitution
+: > "$errfile"
+outer=$(echo $(ATUIN_HISTORY_COMMAND="echo nested"; ATUIN_HISTORY_CWD="/tmp"; \
+    atuin_history_start 2>"$errfile")) || true
+expect_fork_rejected 'nested $()'
 
 # ---- Parent still works after forks ----
 ATUIN_HISTORY_ID=""

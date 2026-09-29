@@ -4,17 +4,17 @@
 
 | 测试 | 类型 | 入口 | 验证内容 |
 | --- | --- | --- | --- |
-| `cargo test` | Rust 单元测试 | `rust_src/src/ffi.rs` | FFI 生命周期、单 session 契约（重复 init 幂等、无 session 报错、shutdown 幂等、重建）、NULL 安全、返回值错误协议、history 往返、`author_kind`（`$all-agent`/`$all-user` 过滤）、可重复 exit 过滤（include/exclude）、search limit、UUID 稳定性、record store、同 session 并发调用、会话统计计数与重建归零 |
+| `cargo test` | Rust 单元测试 | `rust_src/src/ffi.rs` | FFI 生命周期、单 session 契约（重复 init 幂等、无 session 报错、shutdown 幂等、重建）、NULL 安全、返回值错误协议、history 往返、负 duration 拒绝、`author_kind`（`$all-agent`/`$all-user` 过滤）、可重复 exit 过滤（include/exclude）、search limit、UUID 稳定性、record store、同 session 并发调用、会话统计计数与重建归零 |
 | `ffi_smoke` | C 系统测试 | `tests/ffi_smoke.c` | `dlopen` 加载真实 `libatuin_ffi`，遍历全部导出函数、错误返回协议、fork guard、可重复 exit 过滤、`author_kind` 转发与校验、`atuin_stats` 计数与重建归零 |
-| `test-zsh` | zsh 集成测试 | `tests/test_zsh.sh` | `zmodload`、builtin 变量参数协议、history 往返、search / search_prefix、`ATUIN_HISTORY_AUTHOR_KIND`、`ATUIN_SEARCH_EXITS`/`ATUIN_SEARCH_EXCLUDE_EXITS`、`atuin_stats`、unload |
-| `test-fork-zsh` | zsh 系统测试 | `tests/test_fork_zsh.sh` | `$()`、`&`、管道、子 shell、进程替换、嵌套替换、fork 后父进程可用 |
+| `test-zsh` | zsh 集成测试 | `tests/test_zsh.sh` | `zmodload`、builtin 变量参数协议、history 往返、search / search_prefix、`ATUIN_HISTORY_AUTHOR_KIND`、`ATUIN_SEARCH_EXITS`/`ATUIN_SEARCH_EXCLUDE_EXITS`（数组与标量两种写法）、`atuin_stats`（`-q` argv 抑制摘要、参数非法路径）、unload |
+| `test-fork-zsh` | zsh 系统测试 | `tests/test_fork_zsh.sh` | `$()`、`&`、管道、子 shell、进程替换、嵌套替换都必须被 fork guard 拒绝（断言 stderr 的 `refusing call in forked child process`），fork 后父进程可用 |
 | `test-unload-zsh` | zsh 生命周期测试 | `tests/test_unload_zsh.sh` | 5 次 load/unload 不崩溃、不泄漏 tokio worker 线程 |
 | `test-plugin-zsh` | zsh 插件集成测试 | `tests/test_plugin_zsh.sh` | source 真实 `*.plugin.zsh`，驱动 preexec/precmd/zshaddhistory/autosuggest（`atuin_native` strategy、已加载/未加载 zsh-autosuggestions 两种顺序，均走 `atuin_search_prefix`） |
 | `test-tui-zsh` | zsh TUI pty 集成测试 | `tests/test_tui_zsh.py` | 真实 pty 下打开上游完整 TUI、Enter/↑/Esc、鼠标移动/滚轮、括号粘贴、`$ATUIN_SEARCH_SELECTED`、默认 Ctrl+R / UpArrow bindkey、终端恢复 |
 | `test-install-zsh` | zsh 安装布局测试 | `tests/test_tui_zsh.py`（`PLUGIN` 指向安装 prefix） | `cmake --install` 后 source 安装出来的插件，Ctrl+R / UpArrow 仍能触发上游完整 TUI |
-| `test-pwsh-unit` | PowerShell 托管单元测试 | `pwsh_src/AtuinNative.Tests` | `AtuinSession` / `AtuinEnvironment` 的断言（单 session Init/Shutdown 契约、`author_kind`、可重复 exit 过滤、stats 计数与重建归零） |
+| `test-pwsh-unit` | PowerShell 托管单元测试 | `pwsh_src/AtuinNative.Tests` | `AtuinSession` / `AtuinEnvironment` 的断言（单 session Init/Shutdown 契约、`author_kind`、可重复 exit 过滤、负 duration/limit/offset 校验、被过滤命令的 `HistoryStart` 返回 null、stats 计数与重建归零） |
 | `test-pwsh` | pwsh 集成测试 | `tests/test_pwsh.ps1` | Add-Type、manifest import、history/search、`Get-AtuinNativeStats`、PSConsoleHostReadLine 恢复、3 次模块循环 |
-| `test-tui-pwsh` | pwsh TUI pty 集成测试 | `tests/test_tui_pwsh.py` | `SearchInteractive` 选中/取消、导入时自动绑定的 Ctrl+R / UpArrow 打开 TUI 并 `AcceptLine`、退出后 `InvokePrompt` 复位提示符 |
+| `test-tui-pwsh` | pwsh TUI pty 集成测试 | `tests/test_tui_pwsh.py` | 全新 shell（`$LASTEXITCODE` 未设置 + `$ErrorActionPreference='Stop'`）下 `PSConsoleHostReadLine` 仍记录历史、`SearchInteractive` 选中/取消、导入时自动绑定的 Ctrl+R / UpArrow 打开 TUI 并 `AcceptLine`、退出后 `InvokePrompt` 复位提示符 |
 | `test-install-pwsh` | pwsh 安装布局测试 | `tests/test_tui_pwsh.py`（`DLL_DIR` 指向安装 prefix） | `cmake --install` 后的模块导入自动绑定 Ctrl+R / UpArrow |
 
 ## 前置条件
@@ -126,21 +126,24 @@ DOTNET_ROLL_FORWARD=Major \
 
 ## fork guard 测试注意事项
 
-被 guard 拒绝的 builtin 在 fork 子进程中返回非零状态。
-在 `set -e` 脚本中，预期失败的调用必须放在 `if` / `while` 条件中：
+被 guard 拒绝的 builtin 在 fork 子进程中返回非零状态，并在 stderr 输出
+`refusing call in forked child process`。`test_fork_zsh.sh` 用统一的
+`expect_fork_rejected` 断言这一点：把子进程的 stderr 重定向到文件，再检查
+消息（进程替换等异步场景会重试等待）。
+
+在 `set -e` 脚本中，预期失败的调用必须放在 `if` / `while` 条件中，或加
+`|| true`，否则测试脚本会被非零状态中止——这不是模块崩溃：
 
 ```zsh
-ATUIN_HISTORY_COMMAND="cmd"
-ATUIN_HISTORY_CWD="/tmp"
-if sub_id=$(atuin_history_start 2>/dev/null); then
-    echo "guard did not reject"
-else
-    echo "guard rejected"
-fi
+errfile=$(mktemp)
+: > "$errfile"
+# 预期非零：或放在 if 条件里，或显式 || true
+sub_id=$(atuin_history_start 2>"$errfile") || true
+grep -q "forked child process" "$errfile"
 ```
 
-直接写 `var=$(atuin_history_start)` 会触发 `set -e` 退出，
-这不是模块崩溃，而是测试脚本被非零状态中止。
+注意管道的退出状态是最后一段（`cat`）的状态；`test_fork_zsh.sh` 依赖
+`set -o pipefail`，否则非末位的 builtin 失败会被 `cat` 的成功掩盖。
 
 ## 线程泄漏检查
 

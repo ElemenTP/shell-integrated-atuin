@@ -64,7 +64,7 @@ function Initialize-AtuinNativeSession {
         $uuid = [AtuinNative.Session]::SessionUuid()
         $env:ATUIN_SESSION = $uuid
         [AtuinNative.AtuinEnvironment]::Set('ATUIN_SESSION', $uuid)
-        $env:ATUIN_PID = $PID
+        [AtuinNative.AtuinEnvironment]::Set('ATUIN_PID', $PID)
         $script:SessionInitialized = $true
     }
 }
@@ -95,6 +95,10 @@ function Get-AtuinNativeStats {
 $script:AtuinHistoryId = $null
 $script:PreviousPSConsoleHostReadLine = $null
 $script:HasExpectedReadLineOverload = $false
+# Function names of the Ctrl+R / UpArrow handlers that were bound before this
+# module replaced them, captured so OnRemove can put them back.
+$script:PreviousCtrlRHandler = $null
+$script:PreviousUpArrowHandler = $null
 
 function Get-AtuinCommandLine {
     $line = $null
@@ -146,6 +150,7 @@ function Reset-AtuinPrompt {
 }
 
 function Invoke-AtuinNativeReadLine {
+    Microsoft.PowerShell.Core\Set-StrictMode -Off
     # 1. Collect the exit code of the previous command.
     $lastRunStatus = $?
     $lastNativeExitCode = $global:LASTEXITCODE
@@ -170,7 +175,6 @@ function Invoke-AtuinNativeReadLine {
     }
 
     # 3. Read the next command line.
-    Microsoft.PowerShell.Core\Set-StrictMode -Off
     $line = if ($script:HasExpectedReadLineOverload) {
         [Microsoft.PowerShell.PSConsoleReadLine]::ReadLine(
             $Host.Runspace,
@@ -320,11 +324,62 @@ function Enable-AtuinSearchKeys {
     }
 }
 
+function Get-AtuinSavedKeyHandler {
+    <#
+    .SYNOPSIS
+        Returns the function name currently bound to a chord, or $null.
+    #>
+    param([Parameter(Mandatory)][string]$Chord)
+
+    $handler = Get-PSReadLineKeyHandler -Chord $Chord -ErrorAction Ignore | Select-Object -First 1
+    if ($null -eq $handler) {
+        return $null
+    }
+    # A user-defined ScriptBlock handler cannot be recovered from PSReadLine:
+    # its Function field holds the BriefDescription and its Description is
+    # 'User defined action'. Return $null so OnRemove falls back to the
+    # PSReadLine default for that chord.
+    if ($handler.Description -eq 'User defined action') {
+        return $null
+    }
+    return $handler.Function
+}
+
+function Restore-AtuinKeyHandler {
+    <#
+    .SYNOPSIS
+        Restores a chord to the handler it had before this module replaced it.
+
+    .DESCRIPTION
+        PSReadLine cannot hand back a user's custom scriptblock handler, and
+        Remove-PSReadLineKeyHandler leaves the chord unbound instead of
+        reverting to the default. So restore the previously bound function
+        name when one was saved, and fall back to the PSReadLine built-in
+        otherwise.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Chord,
+        [AllowNull()][string]$SavedFunction,
+        [Parameter(Mandatory)][string]$DefaultFunction
+    )
+
+    $function = if ($SavedFunction) { $SavedFunction } else { $DefaultFunction }
+
+    try {
+        Set-PSReadLineKeyHandler -Chord $Chord -Function $function -ErrorAction Stop
+    } catch {
+        Set-PSReadLineKeyHandler -Chord $Chord -Function $DefaultFunction -ErrorAction Ignore
+    }
+}
+
 # ---- Bind search keys by default, exactly like the original module -----------
 # `atuin init powershell` ends with `Enable-AtuinSearchKeys -CtrlR $true
 # -UpArrow $true`; without this, importing the module defines the handler but
 # Ctrl+R / UpArrow keep their PSReadLine defaults and never reach the TUI.
 if (Get-Module PSReadLine -ErrorAction Ignore) {
+    # Remember what the chords were bound to so OnRemove can restore them.
+    $script:PreviousCtrlRHandler = Get-AtuinSavedKeyHandler -Chord "Ctrl+r"
+    $script:PreviousUpArrowHandler = Get-AtuinSavedKeyHandler -Chord "UpArrow"
     Enable-AtuinSearchKeys -CtrlR $true -UpArrow $true
 }
 
@@ -345,9 +400,19 @@ $MyInvocation.MyCommand.ScriptBlock.Module.OnRemove = {
     } else {
         Remove-Item -Path function:\PSConsoleHostReadLine -ErrorAction Ignore
     }
+    if (Get-Module PSReadLine -ErrorAction Ignore) {
+        # Remove-PSReadLineKeyHandler would leave the chords unbound rather
+        # than reverting to their defaults, so restore what was there before.
+        Restore-AtuinKeyHandler -Chord "Ctrl+r" `
+            -SavedFunction $script:PreviousCtrlRHandler `
+            -DefaultFunction "ReverseSearchHistory"
+        Restore-AtuinKeyHandler -Chord "UpArrow" `
+            -SavedFunction $script:PreviousUpArrowHandler `
+            -DefaultFunction "PreviousHistory"
+    }
 
-    $env:ATUIN_SESSION = $null
-    $env:ATUIN_PID = $null
+    [AtuinNative.AtuinEnvironment]::Remove('ATUIN_SESSION')
+    [AtuinNative.AtuinEnvironment]::Remove('ATUIN_PID')
 
     if ($script:SessionInitialized) {
         try { [AtuinNative.Session]::Shutdown() } catch {}

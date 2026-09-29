@@ -5,9 +5,12 @@
  * must be in the same directory; the module is built with $ORIGIN /
  * @loader_path rpath so the FFI library resolves next to the module.
  *
- * Like the starship/zoxide native modules, every builtin is zero-argument:
- * user input is read from zsh parameters and results are written back to zsh
- * parameters. This keeps the C shim tiny and avoids fragile argv parsing.
+ * Like the starship/zoxide native modules, the builtins take their input from
+ * zsh parameters and write their results back to zsh parameters. This keeps the
+ * C shim tiny and avoids fragile argv parsing. The only exceptions are
+ * `atuin_stats` and `atuin_version`, which accept the convenience flags `-v`
+ * (verbose) and `-q` (quiet) for their printed summary; all of their data
+ * still travels through parameters.
  *
  * Builtins:
  *   atuin_history_start  — reads $ATUIN_HISTORY_COMMAND / $ATUIN_HISTORY_CWD /
@@ -24,10 +27,9 @@
  *                              $ATUIN_SEARCH_SHELL_UP_KEY_BINDING /
  *                              $ATUIN_SEARCH_KEYMAP_MODE,
  *                              writes $ATUIN_SEARCH_SELECTED
- *   atuin_stats          — reads $ATUIN_STATS_VERBOSE / $ATUIN_STATS_QUIET,
- *                          writes $ATUIN_STATS_*
+ *   atuin_stats          — accepts -v/-q, writes $ATUIN_STATS_*
  *   atuin_session_id     — writes $ATUIN_SESSION
- *   atuin_version        — writes $ATUIN_VERSION
+ *   atuin_version        — accepts -q, writes $ATUIN_VERSION
  */
 
 #define MODULE
@@ -107,12 +109,31 @@ static char *get_str_param(const char *name) {
 }
 
 /* Read a zsh array parameter into a freshly allocated, unmetafied copy.
- * Caller must release it with freearray() when *len > 0. */
+ *
+ * A scalar parameter is accepted as a one-element array, so repeatable
+ * options (--author / --shell / --exit / --exclude-exit) still work when the
+ * user assigns a single value instead of an array. Caller must release the
+ * result with freearray() when *len > 0. */
 static char **get_arr_param(const char *name, size_t *len) {
   char **arr = getaparam((char *)name);
+
   if (!arr) {
-    *len = 0;
-    return NULL;
+    /* Not an array (or unset): fall back to the scalar value. getsparam()
+     * returns a metafied pointer into the parameters table, so duplicate it
+     * immediately; the copy is unmetafied below like the array elements. */
+    char *scalar = getsparam((char *)name);
+    if (!scalar || !*scalar) {
+      *len = 0;
+      return NULL;
+    }
+
+    char **one = (char **)zalloc(2 * sizeof(char *));
+    one[0] = ztrdup(scalar);
+    unmetafy(one[0], NULL);
+    one[1] = NULL;
+
+    *len = 1;
+    return one;
   }
 
   size_t n = arrlen(arr);
@@ -337,6 +358,9 @@ static int bin_atuin_history_end(UNUSED(char *name), UNUSED(char **argv),
   long long duration_ns = 0;
   int rc_duration = optional_i64_param("ATUIN_HISTORY_DURATION_NS",
                                        &has_duration, &duration_ns);
+  /* The FFI boundary is signed (long long / int64_t) and only accepts a
+   * non-negative duration; 0 asks Atuin to infer it from the start
+   * timestamp. Reject negative values here so shell errors stay visible. */
   if (rc_duration < 0 || duration_ns < 0) {
     zwarnnam(MODNAME, "invalid ATUIN_HISTORY_DURATION_NS");
     zsfree(id);
@@ -457,10 +481,10 @@ static void free_search_options(atuin_search_options_t *opts) {
   zsfree((char *)opts->exclude_cwd);
   zsfree((char *)opts->before);
   zsfree((char *)opts->after);
-  if (opts->author_count > 0) {
+  if (opts->author_count > 0 && opts->authors) {
     freearray((char **)opts->authors);
   }
-  if (opts->shell_count > 0) {
+  if (opts->shell_count > 0 && opts->shells) {
     freearray((char **)opts->shells);
   }
   if (opts->exit_count > 0) {
@@ -484,6 +508,7 @@ static int bin_atuin_search(UNUSED(char *name), UNUSED(char **argv),
                             UNUSED(Options ops), UNUSED(int func)) {
   atuin_search_options_t opts;
   if (read_search_options(&opts) != 0) {
+    free_search_options(&opts);
     unsetparam((char *)"ATUIN_SEARCH_RESULT");
     return 1;
   }
@@ -531,9 +556,8 @@ static int bin_atuin_search_prefix(UNUSED(char *name), UNUSED(char **argv),
   if (!has_limit) {
     limit = 1;
   }
-  if (limit < 0 || limit > INT32_MAX) {
-    limit = 0;
-  }
+  limit = MAX(0, limit);
+  limit = MIN(INT32_MAX, limit);
 
   char *out = NULL;
   char *err = atuin_search_prefix(query ? query : "", (int)limit, &out);
@@ -615,9 +639,9 @@ static int bin_atuin_search_interactive(UNUSED(char *name), UNUSED(char **argv),
 /* ------------------------------------------------------------------ */
 /* Builtin: atuin_stats                                               */
 /*                                                                   */
-/* Reads ATUIN_STATS_VERBOSE / ATUIN_STATS_QUIET, writes the         */
+/* Takes the optional flags -v (verbose) / -q (quiet), writes the    */
 /* ATUIN_STATS_* integer parameters and (unless quiet) prints a       */
-/* summary, like starship_stats.                                      */
+/* summary, like starship_stats.                                     */
 /* ------------------------------------------------------------------ */
 
 static int bin_atuin_stats(UNUSED(char *name), char **argv, UNUSED(Options ops),
@@ -702,6 +726,9 @@ static int bin_atuin_session_id(UNUSED(char *name), UNUSED(char **argv),
 
 /* ------------------------------------------------------------------ */
 /* Builtin: atuin_version                                            */
+/*                                                                   */
+/* Takes the optional flag -q (quiet), writes $ATUIN_VERSION and     */
+/* (unless quiet) prints it.                                         */
 /* ------------------------------------------------------------------ */
 
 static int bin_atuin_version(UNUSED(char *name), char **argv,
