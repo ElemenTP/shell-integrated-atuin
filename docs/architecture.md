@@ -271,7 +271,8 @@ prepare-search-index` 索引预热；PTY proxy 的存活性探测以 `ATUIN_PTY_
   （tabs/inspector/预览/键位配置等）；仅在 Unix 进程内把事件源替换为
   `in_process_event.rs`，避免 `crossterm::event` 的 SIGWINCH 回调在
   `dlclose` 后悬挂。该事件源同时解析按键（含 CSI-u / Kitty keyboard
-  protocol）、SGR/X10 鼠标报告（滚轮选择）与括号粘贴，因此上游 TUI 启用的
+  protocol，功能键如裸 Shift 映射为 `KeyCode::Null` 而不是私有区字符）、
+  SGR/X10 鼠标报告（滚轮选择）与括号粘贴，因此上游 TUI 启用的
   终端模式不会因未识别序列而被误判成 Esc。上游支持的功能因此同步继承
 - zsh 模块构建依赖已 `configure` 的 zsh 源码树（仅头文件）
 - PowerShell 模块目标框架为 `net8.0`，需要 .NET SDK 8+（或 roll-forward 环境）

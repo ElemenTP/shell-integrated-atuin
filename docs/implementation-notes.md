@@ -280,21 +280,70 @@ tabs/inspector/预览、keymap、filter/search mode 循环等全部同步继承�
   窗口一变尺寸就段错误。`in_process_event.rs` 只提供 `poll/read` 两个函数，
   内部自管 `/dev/tty` + `poll(2)` + 字节级 CSI/UTF-8 解析，并把解析结果翻译成
   crossterm `Event` 后交给上游状态机；窗口尺寸变化靠上游循环周期重绘感知。
+
+  **为什么不直接调用现成的库？** 评估过三种"复用现成实现"的路径，结论是
+  解码器必须自己维护，但**以 crossterm 的解析器为规范逐条对齐**：
+
+  - `crossterm::event` 的 `parse_event` 是 `pub(crate)`，无法单独调用；而
+    `crossterm::event::read` 会在 `event/source/unix/tty.rs` 里
+    `signal_hook::low_level::pipe::register(SIGWINCH, ...)` 且永不注销——这正是
+    本模块存在的原因，所以整条 crossterm 读取链路不可用。
+  - `termwiz`（WezTerm）的 `InputParser` 是公开的字节流解析器、无信号处理器，
+    但其解码只覆盖 legacy 序列（静态 `KeyMap` + UTF-8 + 鼠标），**不解码
+    CSI-u/Kitty 协议**（`csi_u_encode` 只用于编码），而 kitty 协议正是我们
+    必须支持的（上游会 push 对应的 enhancement flags）。
+  - Ghostty 是 Zig 实现，不能在 Rust 里链接，只能作为**协议参考**；功能键码表
+    与修饰键语义参考了 kitty 协议文档、Ghostty 的 input 解析以及 crossterm。
+
+  因此解码器以 **crossterm 0.29 `event/sys/unix/parse.rs` 为规范**逐条移植
+  （事件模型就是上游状态机消费的 `crossterm::event::KeyEvent`），并补上
+  crossterm 自身缺失的 Kitty 功能键（如 F1–F12 的 57364–57375 区间）。
+
   解析范围与上游 TUI 启用的终端模式一致：
-  - 按键（含 CSI/SS3 光标键、UTF-8）；
+
+  - 按键（含 CSI/SS3 光标键、UTF-8）。内部不再用自定义 `Key` 枚举，而是直接
+    构造 `KeyEvent { code, modifiers }`，**完整保留 Shift/Alt/Ctrl/Super/
+    Hyper/Meta**：`alt-1..9`、`alt-b/f/d`、`ctrl-left/right`、`ctrl-delete` 都是
+    上游默认绑定，早期版本丢掉修饰键后这些绑定全部失效；
+  - `ESC <key>` 是 legacy 的 Alt/Option（metaSendsEscape）：解析 `ESC` 之后的
+    内容并加上 `ALT`。早期版本把它当成裸 `Esc`，**按 Alt+任意键会直接关闭
+    搜索**（在不支持 kitty 协议的终端上尤其明显）；
   - CSI-u / Kitty keyboard protocol (`ESC [ codepoint ; modifiers u`)：上游会
-    push keyboard enhancement flags，支持该协议的终端（kitty/wezterm/foot 等）
-    会用 CSI-u 上报所有按键，解析器将其归一化为与 legacy 字节相同的内部按键；
+    push keyboard enhancement flags（`DISAMBIGUATE_ESCAPE_CODES |
+    REPORT_ALL_KEYS_AS_ESCAPE_CODES | REPORT_ALTERNATE_KEYS`），支持该协议的
+    终端（kitty/wezterm/foot 等）会用 CSI-u 上报所有按键；
+  - Kitty **功能键**：裸 Shift/Ctrl/Alt/Super、CapsLock、PrintScreen、Pause 等
+    上报为 BMP 私有区码位（`0xE000`–`0xF8FF`），映射为 `KeyCode::Null` 由上游
+    忽略。早期版本走了 `char::from_u32`，导致**单独按 Shift 会往查询里插入
+    一个私有区字符**（U+E061 等），打大写字母时出现乱码。小键盘
+    （57399–57427）、F1–F35（57364–57398）、媒体键（57428–57440）按 crossterm
+    的映射翻译成文本/`KeyCode`；事件类型 `:3`（release）直接丢弃（上游不请求
+    event types，但容忍终端发送）；`:alternate` 只在按住 Shift 时生效；
   - SGR (`ESC [ < ... M/m`) 与 X10 (`ESC [ M ...`) 鼠标报告。上游会开启
     any-event mouse tracking，因此**必须**消费鼠标移动事件；否则它们会被
     误判为 `Esc` 直接取消 TUI。滚轮事件映射为 `ScrollUp`/`ScrollDown`，
-    与上游 `handle_mouse_input` 的选择行为对接；
+    与上游 `handle_mouse_input` 的选择行为对接；不认识的按键上报为 `Moved`
+    而不是丢弃整个事件流；
   - 括号粘贴 (`ESC [ 200 ~ ... ESC [ 201 ~`)：上游把它作为 `Event::Paste`
-    插入查询而不是逐键执行，因此解析器会跨多次 read 收集完整 payload；
+    插入查询而不是逐键执行，因此解析器会跨多次 read 收集完整 payload，并有
+    1 MiB 上限（未终结的粘贴不会无限增长缓冲区）；
   - 完整但无法识别的 CSI 序列映射为 `KeyCode::Null`（上游忽略），避免未知
-    终端报告意外触发 Esc 取消。
+    终端报告意外触发 Esc 取消；
+  - **不完整序列策略**：只有"缓冲区里恰好只有一个 `ESC`"才会在
+    `PARTIAL_WAIT`(30 ms) 后当作 Escape；更长的未完成序列（`ESC [`、被拆包的
+    SGR 报告、被拆包的 `ESC [ 200 ~`、半个 UTF-8 字符）会继续等待，最多
+    `INCOMPLETE_TIMEOUT`(500 ms)，超时后作为 `KeyCode::Null` 整体丢弃。绝不会
+    退化成 Esc（取消 TUI）或把后续字节当文本（污染查询）；
+  - 非法 UTF-8（非法续字节、overlong、surrogate、超出 U+10FFFF）立即产出
+    一个 U+FFFD 并只消费 1 字节，不会等待永远不会到达的字节；
+  - 超大 CSI/SS3/SGR 序列（超过 `MAX_SEQ`=32 参数字节且仍未见结束字节）整体
+    消费为 `KeyCode::Null`，不会把 `[` 和参数字节当文本泄漏进查询。
+- **每次交互式搜索开始时清空输入缓冲区**（`Session::search_interactive_tui`
+  调用 `reset_tui_input()`）：缓冲区是进程级全局的，上一次搜索残留的字节
+  （取消后的 `[`、截断的报告、粘贴尾巴）否则会被当成下一次 Ctrl+R 的按键。
 - Windows 上 `crossterm::event` 只做 `WaitForMultipleObjects` /
-  `ReadConsoleInputW`，无回调无线程，所以仍直接走 crossterm 事件源。
+  `ReadConsoleInputW`，无回调无线程，所以仍直接走 crossterm 事件源；这里
+  `reset()` 是 no-op（crossterm 没有公开的"清空待处理输入"接口）。
 
 `enter_accept` 配置决定 Enter 是否返回 `__atuin_accept__:` 前缀；Esc /
 Ctrl+C / Ctrl+G 返回取消，shell 保持原 buffer。

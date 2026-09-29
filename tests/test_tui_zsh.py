@@ -112,12 +112,38 @@ class PtyShell:
             os.close(self.master)
 
 
+ALT_ENTER = b"\x1b[?1049h"
+ALT_LEAVE = b"\x1b[?1049l"
+
+
 def wait_for_alt_screen(shell: PtyShell, entered: bool) -> bytes:
     """Wait for the TUI to enter (1049h) or leave (1049l) the alt screen."""
-    needle = b"\x1b[?1049h" if entered else b"\x1b[?1049l"
+    needle = ALT_ENTER if entered else ALT_LEAVE
     out = shell.wait_for(needle, timeout=10.0)
     time.sleep(0.25)  # let ratatui paint the first frame
     return out
+
+
+def wait_for_new_alt_marker(shell: PtyShell, entered: bool, timeout: float = 10.0) -> bytes:
+    """Wait for a *new* alt-screen enter/leave, ignoring earlier markers.
+
+    `shell.buf` is cumulative, so `wait_for_alt_screen` can match a marker from
+    a previous TUI run; cases that assert on the current state need a fresh one.
+    """
+    needle = ALT_ENTER if entered else ALT_LEAVE
+    previous = shell.buf.count(needle)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if shell.buf.count(needle) > previous:
+            time.sleep(0.25)  # let ratatui paint the first frame
+            return shell.buf
+        shell.read(0.2)
+    raise AssertionError(f"timed out waiting for another {needle!r}")
+
+
+def in_alt_screen(buf: bytes) -> bool:
+    """True when the most recent alt-screen marker is the "enter" one."""
+    return buf.rfind(ALT_ENTER) > buf.rfind(ALT_LEAVE)
 
 
 def main() -> int:
@@ -260,7 +286,58 @@ def main() -> int:
         )
         tests += 1
 
-        # ---- 7. The plugin widget (Ctrl+R in ZLE) drives the same TUI --------
+        # ---- 7. Bare modifier presses do not corrupt the query ---------------
+        # REPORT_ALL_KEYS_AS_ESCAPE_CODES makes terminals report a lone Shift
+        # press as functional-key codepoint 57441. It must be ignored instead of
+        # being decoded into a private-use character (which broke uppercase
+        # input by leaving a stray glyph in the query).
+        shell.send('ATUIN_SEARCH_QUERY="echo tui"; atuin_search_interactive\n')
+        wait_for_alt_screen(shell, entered=True)
+        shell.send("\x1b[57441u")  # bare left Shift press
+        time.sleep(0.3)
+        shell.send("\x1b[57447u")  # bare right Shift press
+        time.sleep(0.3)
+        shell.send("\r")
+        wait_for_alt_screen(shell, entered=False)
+        shell.run(
+            'print -r -- "TUI_SHIFT:${ATUIN_SEARCH_SELECTED:-}"',
+            "TUI_SHIFT:__atuin_accept__:echo tui-newest",
+        )
+        tests += 1
+
+        # ---- 8. Legacy Alt+key must not cancel the TUI -----------------------
+        # Terminals without the Kitty protocol send Alt/Option as `ESC <key>`
+        # (metaSendsEscape). Decoding that as a bare Escape used to close the
+        # search immediately and leak the key into the shell buffer.
+        shell.send('ATUIN_SEARCH_QUERY="echo tui"; atuin_search_interactive\n')
+        wait_for_new_alt_marker(shell, entered=True)
+        shell.send("\x1bb")  # Alt+b (CursorWordLeft)
+        shell.send("\x1bf")  # Alt+f (CursorWordRight)
+        time.sleep(0.4)
+        if not in_alt_screen(shell.buf):
+            raise AssertionError("legacy Alt+key closed the TUI")
+        shell.send("\x1b")  # Escape cancels
+        wait_for_new_alt_marker(shell, entered=False)
+        tests += 1
+
+        # ---- 9. A paste marker split across reads still pastes ---------------
+        # `ESC[200~` split by more than one partial-wait interval must not be
+        # turned into Escape + literal text.
+        shell.send('ATUIN_SEARCH_QUERY=""; atuin_search_interactive\n')
+        wait_for_new_alt_marker(shell, entered=True)
+        shell.send("\x1b[20")  # first half of the begin marker
+        time.sleep(0.2)  # well past the 30 ms partial wait
+        shell.send("0~echo tui-oldest\x1b[201~")
+        time.sleep(0.4)
+        shell.send("\r")
+        wait_for_new_alt_marker(shell, entered=False)
+        shell.run(
+            'print -r -- "TUI_SPLIT_PASTE:${ATUIN_SEARCH_SELECTED:-}"',
+            "TUI_SPLIT_PASTE:__atuin_accept__:echo tui-oldest",
+        )
+        tests += 1
+
+        # ---- 10. The plugin widget (Ctrl+R in ZLE) drives the same TUI -------
         shell.run(
             f"zmodload -u atuin_native; "
             f"export ATUIN_NATIVE_DIR='{module_dir}'; "
@@ -288,7 +365,7 @@ def main() -> int:
         shell.wait_for(b"tui-newest", timeout=10.0)
         tests += 1
 
-        # ---- 8. UpArrow binding opens the TUI; Esc keeps the buffer -------
+        # ---- 11. UpArrow binding opens the TUI; Esc keeps the buffer ------
         shell.send("echo tui")
         time.sleep(0.3)
         shell.send("\x1b[A")           # UpArrow (CSI form)
@@ -299,7 +376,7 @@ def main() -> int:
         shell.wait_for(b"\r\ntui\r\n", timeout=10.0)
         tests += 1
 
-        # ---- 9. Module unload after TUI widget use -------------------------
+        # ---- 12. Module unload after TUI widget use -------------------------
         shell.run(
             "zmodload -u atuin_native; print -r -- TUI_ZSH_UNLOADED",
             "TUI_ZSH_UNLOADED",
