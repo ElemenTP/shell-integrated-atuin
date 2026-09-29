@@ -231,38 +231,40 @@ function Invoke-AtuinSearch {
     .SYNOPSIS
         Opens the in-process Atuin interactive search TUI and replaces the
         current command line with the selection.
+
+    .DESCRIPTION
+        The current PSReadLine buffer is used as the initial query. Pass
+        -ShellUpKeyBinding for the UpArrow widget and -KeymapMode for the vi
+        widgets; the official PowerShell module forwards the equivalent
+        `atuin search -i --shell-up-key-binding --keymap-mode=…` flags, but
+        in-process these are ordinary typed parameters.
+
+    .PARAMETER ShellUpKeyBinding
+        Mirror `atuin search -i --shell-up-key-binding` (the shell's UpArrow
+        widget): UpArrow inside the TUI walks history instead of moving within
+        the command line.
+
+    .PARAMETER KeymapMode
+        Mirror `atuin search -i --keymap-mode`: the vi widgets pass VimNormal /
+        VimInsert so the TUI starts in the matching keymap.
     #>
     [CmdletBinding()]
-    param([string]$ExtraArgs = "")
+    param(
+        [switch]$ShellUpKeyBinding,
+        [AtuinNative.AtuinKeymapMode]$KeymapMode = [AtuinNative.AtuinKeymapMode]::Auto
+    )
 
     if (-not (Get-Module PSReadLine -ErrorAction Ignore)) {
         Write-Warning "atuin-native: PSReadLine is required for Invoke-AtuinSearch."
         return
     }
 
-    # Mirror the official `atuin search -i` flags the widgets pass: the UpArrow
-    # binding uses --shell-up-key-binding and the vi widgets add --keymap-mode.
-    $shellUp = $false
-    $keymapMode = [AtuinNative.AtuinKeymapMode]::Auto
-    foreach ($arg in ($ExtraArgs -split '\s+' | Where-Object { $_ })) {
-        switch -Regex ($arg) {
-            '^--shell-up-key-binding$' { $shellUp = $true }
-            '^--keymap-mode=(?<mode>.+)$' {
-                $keymapMode = switch ($Matches['mode']) {
-                    'emacs'      { [AtuinNative.AtuinKeymapMode]::Emacs }
-                    'vim-normal' { [AtuinNative.AtuinKeymapMode]::VimNormal }
-                    'vim-insert' { [AtuinNative.AtuinKeymapMode]::VimInsert }
-                    default      { [AtuinNative.AtuinKeymapMode]::Auto }
-                }
-            }
-        }
-    }
-
     $query = Get-AtuinCommandLine
 
     try {
         Initialize-AtuinNativeSession
-        $selected = [AtuinNative.Session]::SearchInteractive($query, $shellUp, $keymapMode)
+        $selected = [AtuinNative.Session]::SearchInteractive(
+            $query, [bool]$ShellUpKeyBinding, $KeymapMode)
     } catch {
         if (-not $script:NativeWarned) {
             $script:NativeWarned = $true
@@ -310,7 +312,7 @@ function Enable-AtuinSearchKeys {
         Set-PSReadLineKeyHandler -Chord "UpArrow" -BriefDescription "Runs Atuin native search" -ScriptBlock {
             $line = Get-AtuinCommandLine
             if ($null -ne $line -and -not $line.Contains("`n")) {
-                Invoke-AtuinSearch -ExtraArgs "--shell-up-key-binding"
+                Invoke-AtuinSearch -ShellUpKeyBinding
             } else {
                 [Microsoft.PowerShell.PSConsoleReadLine]::PreviousLine()
             }

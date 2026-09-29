@@ -197,11 +197,11 @@ zsh 模块提供 8 个 builtin，全部为**零参数 builtin**。输入与输�
 
 - `ATUIN_SESSION` / `ATUIN_SHLVL` 会话初始化
 - preexec / precmd / zshaddhistory 三个 hook（preexec 内同时打点计时）
-- zsh-autosuggestions 的 `atuin` strategy（与官方同名，`atuin_native` 为兼容别名）
-  调用 `atuin_search_prefix`（官方 `--cmd-only --author '$all-user' --limit 1
-  --search-mode prefix` 的专用快路径）。与官方一样**无条件**定义 strategy 并把
-  `atuin` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`，因此在 zsh-autosuggestions 之前
-  source 也生效
+- zsh-autosuggestions 的 `atuin_native` strategy 调用 `atuin_search_prefix`
+  （官方 `--cmd-only --author '$all-user' --limit 1 --search-mode prefix` 的
+  专用快路径）。与官方一样**无条件**定义 strategy 并把 `atuin_native` 前插到
+  `ZSH_AUTOSUGGEST_STRATEGY`，因此在 zsh-autosuggestions 之前 source 也生效；
+  strategy 故意不叫官方的 `atuin`，避免与 `atuin init zsh` 安装的策略冲突
 - `atuin-search` / `atuin-up-search` 等 ZLE widget 兼容名（widget 调用
   `atuin_search_interactive`，选中后写入 `LBUFFER`；`__atuin_accept__:`
   前缀会触发 `zle accept-line`）
@@ -225,25 +225,42 @@ prepare-search-index` 索引预热；PTY proxy 的存活性探测以 `ATUIN_PTY_
 
 - `AtuinNative.dll` 使用 .NET 7+ `LibraryImport` 源码生成器 P/Invoke
 - `NativeMethods` 注册 `DllImportResolver`：优先 `ATUIN_FFI_PATH`，否则探测程序集同目录
-- `AtuinSession` 是无实例的静态封装（native 只有一个进程级 session）：
-  `Init()` 创建，`Shutdown()` 幂等析构，`HistoryStart`/`HistoryEnd`/`Search*`/
-  `SessionUuid`/`GetStats` 都是静态方法；重复 `Init()` 幂等并保留现有 session
+- `AtuinNative.Session` 是无实例的静态封装（native 只有一个进程级 session）：
+  `Initialize()` 创建，`Shutdown()` 幂等析构，`HistoryStart`/`HistoryEnd`/`Search*`/
+  `SessionUuid`/`GetStats` 都是静态方法；重复 `Initialize()` 幂等并保留现有 session
 - `HistoryStart(command, cwd, author, authorKind, intent)` 对应官方
   `--author` / `--author-kind`（`AtuinAuthorKind.User`/`Agent`）/ `--intent`；
   `AtuinSearchOptions.Exits` / `ExcludeExits`（`long[]`）对应可重复的
   `--exit` / `--exclude-exit`
 - `AtuinEnvironment` 同时写 .NET 与 libc `setenv` 环境块，保证内嵌 Rust 能通过 `std::env` 读取
-- `atuin-native.psm1` 复刻官方 `atuin.ps1` 的 `PSConsoleHostReadLine` 方案：
-  读下一行前 finalize 上一条命令，读到后 start 新命令；首次使用时
-  `Initialize-AtuinNativeSession` 调用 `[AtuinNative.Session]::Initialize()`
-- `Invoke-AtuinSearch` / `Enable-AtuinSearchKeys` 调用进程内全屏 TUI，
-  选中后替换命令行；`__atuin_accept__:` 前缀触发 `AcceptLine`；
-  `-ExtraArgs` 里的 `--shell-up-key-binding` / `--keymap-mode=…` 会转成
-  `SearchInteractive` 的 up/vi 参数（官方 UpArrow / vi widget 行为）
+- `Invoke-AtuinSearch [-ShellUpKeyBinding] [-KeymapMode <AtuinKeymapMode>]`
+  调用进程内全屏 TUI，选中后替换命令行；`__atuin_accept__:` 前缀触发
+  `AcceptLine`。官方用 `-ExtraArgs '--shell-up-key-binding --keymap-mode=…'`
+  字符串转发 CLI 参数，进程内直接映射成强类型 PowerShell 参数
+  （`AtuinKeymapMode.Auto/Emacs/VimNormal/VimInsert`），不再解析字符串
 - `Get-AtuinNativeStats` 返回 `[AtuinNative.Session]::GetStatsReport()` 的会话统计摘要
 - 模块导入时自动执行 `Enable-AtuinSearchKeys -CtrlR $true -UpArrow $true`，
   与 `atuin init powershell` 的默认行为一致
 - 模块移除时恢复原始 `PSConsoleHostReadLine` 并调用 `[AtuinNative.Session]::Shutdown()`
+
+#### 与官方 `atuin.ps1` 的功能对应
+
+| 官方 `atuin.ps1` | `atuin-native.psm1` | 说明 |
+| --- | --- | --- |
+| 前置检查：`Get-Module Atuin`、`Get-Command atuin`、`Get-Module PSReadLine` | 加载 `AtuinNative.dll` + 定位 FFI 库 + PSReadLine 检查 | 不再要求 PATH 里有 `atuin`，改为要求 DLL/`.so` 与本模块 |
+| `New-Module -Name Atuin { … } \| Import-Module -Global`（动态模块） | 普通 manifest 模块 `atuin-native`（`.psd1` + `.psm1` + `NestedModules` DLL） | 官方用动态模块原子地替换全局函数；本模块由 manifest 声明 |
+| 模块创建时 `ATUIN_SESSION = atuin uuid` / `ATUIN_PID` | `Initialize-AtuinNativeSession`（首次使用时）→ `Session::Initialize()` + `SessionUuid()` | 惰性初始化；两个环境变量语义相同 |
+| `Get-CommandLine` | `Get-AtuinCommandLine` | `PSConsoleReadLine::GetBufferState` |
+| `Set-CommandLine` | `Set-AtuinCommandLine` | `PSConsoleReadLine::Replace` |
+| `PSConsoleHostReadLine`（收集 `$?`/`$LASTEXITCODE` → `atuin history end` 子进程 → `ReadLine` → `atuin history start`） | `Invoke-AtuinNativeReadLine`（同样 4 步，end/start 换成 `Session::HistoryEnd`/`HistoryStart`） | 官方 4 步流程逐条对应；全局 `PSConsoleHostReadLine` 包装函数通过 `$script:AtuinNativeModule` 重入模块作用域 |
+| `Invoke-AtuinSearch`（启动 `atuin search -i --result-file`、读结果文件、`InvokePrompt`） | `Invoke-AtuinSearch [-ShellUpKeyBinding] [-KeymapMode]` → `Session::SearchInteractive` + `Reset-AtuinPrompt` | TUI 在进程内运行；托管返回字符串代替结果文件；`InvokePrompt` + `ATUIN_POWERSHELL_PROMPT_OFFSET` 逻辑等价 |
+| `Enable-AtuinSearchKeys` | `Enable-AtuinSearchKeys` | 相同的 `Set-PSReadLineKeyHandler`；UpArrow 遇到多行缓冲时回退 `PreviousLine` |
+| 脚本末尾 `Enable-AtuinSearchKeys -CtrlR $true -UpArrow $true` | 模块导入时自动调用 | 行为一致 |
+| `OnRemove`：清 `ATUIN_SESSION`、恢复 `PSConsoleHostReadLine` | `OnRemove`：同上 + 清 `ATUIN_PID` + `Session::Shutdown()` | 多了 native session 清理 |
+| `Export-ModuleMember @("Enable-AtuinSearchKeys","PSConsoleHostReadLine")` | 导出 6 个函数 | 多出 `Initialize-AtuinNativeSession` / `Get-AtuinNativeVersion` / `Get-AtuinNativeStats` / `Invoke-AtuinSearch` 等 native 特有入口 |
+| `ATUIN_COMMAND_LINE` 环境变量传递命令行 | 直接作为 `HistoryStart` 参数 | 无需环境变量规避 PowerShell 参数转义 |
+| `--result-file` / stdout / stderr 重定向 | 托管返回值 / `InvalidOperationException` | 无临时文件、无流重定向 |
+| `__internal prepare-search-index` 子进程预热 | —（不需要） | 进程内 prefix search 直接查 SQLite，没有外部索引 |
 
 ### 6. 已知边界
 

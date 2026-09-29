@@ -9,7 +9,7 @@
 | `test-zsh` | zsh 集成测试 | `tests/test_zsh.sh` | `zmodload`、builtin 变量参数协议、history 往返、search / search_prefix、`ATUIN_HISTORY_AUTHOR_KIND`、`ATUIN_SEARCH_EXITS`/`ATUIN_SEARCH_EXCLUDE_EXITS`、`atuin_stats`、unload |
 | `test-fork-zsh` | zsh 系统测试 | `tests/test_fork_zsh.sh` | `$()`、`&`、管道、子 shell、进程替换、嵌套替换、fork 后父进程可用 |
 | `test-unload-zsh` | zsh 生命周期测试 | `tests/test_unload_zsh.sh` | 5 次 load/unload 不崩溃、不泄漏 tokio worker 线程 |
-| `test-plugin-zsh` | zsh 插件集成测试 | `tests/test_plugin_zsh.sh` | source 真实 `*.plugin.zsh`，驱动 preexec/precmd/zshaddhistory/autosuggest（官方 `atuin` strategy 名、别名、已加载/未加载 zsh-autosuggestions 两种顺序，均走 `atuin_search_prefix`） |
+| `test-plugin-zsh` | zsh 插件集成测试 | `tests/test_plugin_zsh.sh` | source 真实 `*.plugin.zsh`，驱动 preexec/precmd/zshaddhistory/autosuggest（`atuin_native` strategy、已加载/未加载 zsh-autosuggestions 两种顺序，均走 `atuin_search_prefix`） |
 | `test-tui-zsh` | zsh TUI pty 集成测试 | `tests/test_tui_zsh.py` | 真实 pty 下打开上游完整 TUI、Enter/↑/Esc、鼠标移动/滚轮、括号粘贴、`$ATUIN_SEARCH_SELECTED`、默认 Ctrl+R / UpArrow bindkey、终端恢复 |
 | `test-install-zsh` | zsh 安装布局测试 | `tests/test_tui_zsh.py`（`PLUGIN` 指向安装 prefix） | `cmake --install` 后 source 安装出来的插件，Ctrl+R / UpArrow 仍能触发上游完整 TUI |
 | `test-pwsh-unit` | PowerShell 托管单元测试 | `pwsh_src/AtuinNative.Tests` | `AtuinSession` / `AtuinEnvironment` 的断言（单 session Init/Shutdown 契约、`author_kind`、可重复 exit 过滤、stats 计数与重建归零） |

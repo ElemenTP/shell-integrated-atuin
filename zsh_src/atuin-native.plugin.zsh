@@ -117,11 +117,14 @@ autoload -Uz add-zsh-hook
 zmodload zsh/datetime 2>/dev/null
 
 # ---- Autosuggest integration (replaces `atuin search --cmd-only --limit 1`)
-# Mirrors the official atuin.zsh exactly: the strategy function is defined
+# Mirrors the official atuin.zsh: the strategy function is defined
 # unconditionally and prepended to ZSH_AUTOSUGGEST_STRATEGY, so it also works
 # when this plugin is sourced *before* zsh-autosuggestions (which reads the
 # variable when it loads). Users override it by adding their own config after
 # sourcing the plugin, just like with the official script.
+# The strategy is deliberately named `atuin_native` instead of the official
+# `atuin`, so it cannot collide with the strategy installed by `atuin init zsh`
+# when both integrations are present.
 # The builtin uses the ATUIN_SEARCH_RESULT parameter (set by atuin_search_prefix)
 # to avoid command substitution, which would fork and corrupt the in-process
 # tokio runtime. `atuin_search_prefix` is exactly the official

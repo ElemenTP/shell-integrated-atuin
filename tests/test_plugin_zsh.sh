@@ -40,13 +40,11 @@ source "$PLUGIN"
     || { echo "FAIL: plugin did not set _ATUIN_NATIVE_LOADED"; exit 1; }
 [[ -n "${ATUIN_SESSION:-}" ]] && echo "PASS: session id exported" \
     || { echo "FAIL: ATUIN_SESSION not exported"; exit 1; }
-# zsh-autosuggestions parity: the official `atuin` strategy name must be
-# installed and prepended to the strategy list, exactly like atuin.zsh.
-[[ "${+functions[_zsh_autosuggest_strategy_atuin]}" == 1 ]] && echo "PASS: autosuggest strategy installed" \
+# zsh-autosuggestions parity: the strategy must be installed and prepended,
+# whether or not zsh-autosuggestions has already been loaded.
+[[ "${+functions[_zsh_autosuggest_strategy_atuin_native]}" == 1 ]] && echo "PASS: autosuggest strategy installed" \
     || { echo "FAIL: autosuggest strategy missing"; exit 1; }
-[[ "${+functions[_zsh_autosuggest_strategy_atuin_native]}" == 1 ]] && echo "PASS: autosuggest alias installed" \
-    || { echo "FAIL: autosuggest alias missing"; exit 1; }
-[[ "${ZSH_AUTOSUGGEST_STRATEGY[1]}" == "atuin" ]] && echo "PASS: autosuggest strategy prepended" \
+[[ "${ZSH_AUTOSUGGEST_STRATEGY[1]}" == "atuin_native" ]] && echo "PASS: autosuggest strategy prepended" \
     || { echo "FAIL: ZSH_AUTOSUGGEST_STRATEGY=${ZSH_AUTOSUGGEST_STRATEGY[*]}"; exit 1; }
 
 # Sourcing before zsh-autosuggestions (variable unset) must still configure it.
@@ -55,7 +53,7 @@ autosuggest_default=$(env -u ZSH_AUTOSUGGEST_STRATEGY \
     ATUIN_DATA_DIR="$ATUIN_DATA_DIR" \
     ATUIN_CONFIG_DIR="$ATUIN_CONFIG_DIR" \
     zsh -c "source '$PLUGIN'; print -r -- \"\${ZSH_AUTOSUGGEST_STRATEGY[*]}\"")
-[[ "$autosuggest_default" == "atuin" ]] \
+[[ "$autosuggest_default" == "atuin_native" ]] \
     && echo "PASS: autosuggest configured before zsh-autosuggestions loads" \
     || { echo "FAIL: unset strategy produced '$autosuggest_default'"; exit 1; }
 
@@ -86,7 +84,7 @@ atuin_search >/dev/null
 
 # Autosuggest strategy contract: sets global $suggestion without forking.
 suggestion=""
-_zsh_autosuggest_strategy_atuin "echo plugin-hook-test"
+_zsh_autosuggest_strategy_atuin_native "echo plugin-hook-test"
 [[ "${suggestion:-}" == *"echo plugin-hook-test"* ]] \
     && echo "PASS: autosuggest strategy sets suggestion" \
     || { echo "FAIL: autosuggest strategy returned no suggestion"; exit 1; }

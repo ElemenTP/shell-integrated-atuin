@@ -144,7 +144,7 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 1. `zmodload atuin_native`
 2. 初始化 `ATUIN_SESSION` / `ATUIN_SHLVL`
 3. 注册 preexec / precmd / zshaddhistory hook
-4. 安装 zsh-autosuggestions 的 `atuin` strategy（与官方同名；`atuin_native` 保留为兼容别名）。无论插件在 zsh-autosuggestions **之前还是之后** source，都会把 `atuin` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`，与官方 `atuin.zsh` 完全一致
+4. 安装 zsh-autosuggestions 的 `atuin_native` strategy。无论插件在 zsh-autosuggestions **之前还是之后** source，都会把 `atuin_native` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`（变量未设置时直接设为 `(atuin_native)`）。strategy 故意不叫官方的 `atuin`，避免与 `atuin init zsh` 安装的策略同名冲突
 5. 定义 `atuin-search` / `atuin-up-search` 等兼容 ZLE widget
 6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）；设置 `ATUIN_NOBIND` 可跳过绑定（同官方）
 7. 支持 OSC 133 标记（`__atuin_pty_proxy_owns_tty=1` 时，逻辑与官方 `atuin.zsh` 相同）
@@ -193,6 +193,11 @@ Import-Module /path/to/pwsh_src/AtuinNative/bin/Release/net8.0/atuin-native.psd1
 Get-AtuinNativeVersion
 Get-AtuinNativeStats             # 会话统计摘要（history/search 计数）
 Enable-AtuinSearchKeys           # 可选：重新绑定（导入时已自动绑定）
+
+# 直接打开进程内 TUI（强类型参数，等价官方 --shell-up-key-binding / --keymap-mode）：
+Invoke-AtuinSearch                                              # 当前缓冲区作为初始 query
+Invoke-AtuinSearch -ShellUpKeyBinding                           # UpArrow widget
+Invoke-AtuinSearch -KeymapMode ([AtuinNative.AtuinKeymapMode]::VimNormal)  # vi widget
 ```
 
 模块导入后自动替换 `PSConsoleHostReadLine`，在每行命令前后调用进程内

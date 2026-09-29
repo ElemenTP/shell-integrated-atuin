@@ -247,7 +247,9 @@ C FFI 侧仍通过 `atuin_search_options_t` 传入非交互选项；`atuin_searc
 
 zsh 侧由 `ATUIN_SEARCH_SHELL_UP_KEY_BINDING` / `ATUIN_SEARCH_KEYMAP_MODE` 参数传入，
 插件里 UpArrow widget 设前者、vi widget 设后者；pwsh 侧由
-`Invoke-AtuinSearch -ExtraArgs` 解析 `--shell-up-key-binding` / `--keymap-mode=`。
+`Invoke-AtuinSearch -ShellUpKeyBinding` 与
+`Invoke-AtuinSearch -KeymapMode <AtuinKeymapMode>` 两个强类型参数直接传入
+（官方 `-ExtraArgs` 字符串转发已移除，不再需要参数解析）。
 
 ### 2.6.2 会话统计（`atuin_stats`，对齐 starship_stats）
 
@@ -387,12 +389,11 @@ preexec 的最后一条命令如果是 `[[ cond ]] || return`，在 cond 为假�
 
 插件与官方脚本行为一致的部分：
 
-- zsh-autosuggestions：**无条件**定义 `_zsh_autosuggest_strategy_atuin`（官方
-  同名），并把 `"atuin"` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`（变量未设置时直接
-  设为 `("atuin")`）。因此插件在 zsh-autosuggestions 之前或之后 source 都生效；
-  `_zsh_autosuggest_strategy_atuin_native` 仅作为旧配置的别名保留。旧实现只在
-  `ZSH_AUTOSUGGEST_STRATEGY` 已存在时安装并只用 `atuin_native` 名字，属于
-  与官方不一致的缺陷。
+- zsh-autosuggestions：**无条件**定义 `_zsh_autosuggest_strategy_atuin_native`，
+  并把 `"atuin_native"` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`（变量未设置时直接设为
+  `("atuin_native")`），因此插件在 zsh-autosuggestions 之前或之后 source 都生效。
+  strategy 故意不叫官方的 `atuin`，避免与 `atuin init zsh` 安装的策略冲突；
+  旧实现只在 `ZSH_AUTOSUGGEST_STRATEGY` 已存在时安装，属于与官方不一致的缺陷。
 - OSC 133 使用官方同款 `__atuin_pty_proxy_owns_tty` 契约，`133;D` 格式与官方
   一致（`history_id=`，不再附带自定义的 `session_id=`）。
 - 键位绑定尊重 `ATUIN_NOBIND`；pwsh 退出 TUI 后调用 `InvokePrompt` 并遵循
