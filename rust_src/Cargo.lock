@@ -237,6 +237,7 @@ dependencies = [
  "itertools 0.15.0",
  "libc",
  "locked-tripwire",
+ "mio",
  "norm",
  "ratatui",
  "regex",

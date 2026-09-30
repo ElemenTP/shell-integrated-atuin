@@ -299,6 +299,50 @@ tabs/inspector/预览、keymap、filter/search mode 循环等全部同步继承�
   （事件模型就是上游状态机消费的 `crossterm::event::KeyEvent`），并补上
   crossterm 自身缺失的 Kitty 功能键（如 F1–F12 的 57364–57375 区间）。
 
+  **macOS 的 `/dev/tty` 陷阱（曾导致 TUI 卡死 + 100% CPU）**：macOS 上
+  `/dev/tty` 是一个"克隆"设备（major 2, minor 0），`poll`/`select`/`kqueue`
+  都对它无效（kqueue 直接返回 `EINVAL`），只有**具体的终端设备**
+  （`/dev/ttysNNN`，major 16，也就是 stdin 指向的那个）才能被监听
+  （见 crossterm issue [#996](https://github.com/crossterm-rs/crossterm/issues/996)）。
+  之前直接 `open("/dev/tty")` + `libc::poll`，于是
+  `input_event_poll(250ms)` 立刻返回 true、`read()` 又读不到字节，上游
+  `interactive.rs` 的 `loop { read(); poll(ZERO) }` 就变成忙循环：界面停住、
+  任何按键都收不到、CPU 100%。
+
+  修复分两层：
+
+  1. **fd 来源**：`Input::open` 在 macOS 上对 `STDIN/STDOUT/STDERR` 依次
+     `isatty` + `ttyname` 拿到具体设备路径再打开（等价于 crossterm `tty_fd()`
+     优先用 `STDIN_FILENO` 的做法；见 `terminal/sys/file_descriptor.rs`）。
+     **不会再回退 `/dev/tty`**：kqueue 监听克隆设备会返回 `EINVAL`，那样只会在
+     之后抛出一个难以理解的错误。设备节点打不开时（sandbox/chroot）改为
+     **借用 stdin**（`Source::Borrowed`：只借 stdin，因为它是唯一保证可读的
+     标准描述符；stdout 常常是只写的，而且把它设成非阻塞会破坏 TUI 自己的渲染。
+     借用的描述符会在 `Drop` 里恢复 `O_NONBLOCK` 之前的 flags），它仍然是可监听
+     的具体终端；三个描述符都不是终端时才返回带说明的错误。Linux/Windows 路径
+     保持原样（`/dev/tty`），不影响已经验证正常的平台。
+  2. **就绪检测**：改用 **mio**（`Poll` + `SourceFd` + `Interest::READABLE`），
+     Linux 上走 `epoll`、macOS 上走 `kqueue`。mio 本来就在依赖树里
+     （crossterm 的 `event/source/unix/mio.rs` 用的就是它），所以只是加了一条
+     直接依赖，没有引入新的传递依赖；这也正好回答了"能不能复用 crossterm 的
+     方法"——crossterm 0.29 **并没有**实现 kqueue（其源码里没有任何
+     kqueue/kevent），它的办法就是换 fd + `filedescriptor` 的 `select` shim；
+     而 crossterm 的**事件读取器我们不能直接调用**（它会注册永不注销的
+     SIGWINCH signal-hook，这正是 `in_process_event.rs` 存在的原因，且
+     `parse_event`/`tty_fd` 都是 `pub(crate)`），所以复用的是它内部同一套组件：
+     mio + 具体终端设备。mio 是边沿触发（epoll `EPOLLET` / kqueue `EV_CLEAR`），
+     因此每次就绪都必须排空，`drain()` 正是这么做的。
+  3. 另外 `input.poll()` 会在报告就绪前先把字节读进缓冲区，保证"报了就绪就
+     一定有数据"，从根上消除这类自旋；单测
+     `poll_only_reports_ready_when_bytes_are_buffered` 守护该不变量。
+  4. `Session::search_interactive_tui` 在 TUI **结束后**也会调用
+     `reset_tui_input()`：借用的标准描述符要尽快恢复 flags，不能等到下一次搜索
+     或 session 卸载（否则 zsh 会在非阻塞 stdin 上继续读）。
+
+  该平台的特定代码已用 `cargo check --target x86_64-apple-darwin` 交叉验证
+  （完整 atuin 会卡在 `zstd-sys` 的 C 构建脚本上，故用等价的最小 crate 验证
+  `ttyname` + mio 注册 + `Input` 的 `Send` 约束）。
+
   解析范围与上游 TUI 启用的终端模式一致：
 
   - 按键（含 CSI/SS3 光标键、UTF-8）。内部不再用自定义 `Key` 枚举，而是直接
