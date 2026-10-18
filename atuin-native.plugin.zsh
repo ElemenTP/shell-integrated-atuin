@@ -1,0 +1,1 @@
+zsh_src/atuin-native.plugin.zsh

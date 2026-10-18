@@ -95,6 +95,65 @@ _atuin_native_zshaddhistory $'# plugin comment\n'
 [[ -z "${ATUIN_HISTORY_ID:-}" ]] && echo "PASS: zshaddhistory preserves ATUIN_HISTORY_ID" \
     || { echo "FAIL: zshaddhistory clobbered ATUIN_HISTORY_ID"; exit 1; }
 
+# ---- Output-capture markers (atuin 18.24 protocol) -------------------------
+# atuin 18.24 replaced OSC 133 with its own sequence (18188735); a proxy that
+# only knows the old protocol still gets OSC 133, keyed off
+# ATUIN_PTY_PROXY_ACTIVE=1. Runs in a subshell so the marker state is fresh.
+capture_markers() {
+    local -x ATUIN_PTY_PROXY_ACTIVE="$1"
+    local -x ATUIN_HISTORY_ID="test-id"
+    __atuin_pty_proxy_owns_tty=1
+    __atuin_mark_output_start
+    __atuin_mark_output_end 7
+}
+
+new_proxy=$(capture_markers 2)
+[[ "$new_proxy" == *$'\033]18188735;C;test-id\a'* &&
+   "$new_proxy" == *$'\033]18188735;D;test-id\a'* &&
+   "$new_proxy" != *$'\033]133;'* ]] \
+    && echo "PASS: new pty-proxy uses the 18.24 marker sequence" \
+    || { echo "FAIL: new marker sequence = ${new_proxy@q}"; exit 1; }
+
+old_proxy=$(capture_markers 1)
+[[ "$old_proxy" == *$'\033]133;C\a'* &&
+   "$old_proxy" == *$'\033]133;D;7;history_id=test-id\a'* ]] \
+    && echo "PASS: old pty-proxy still gets OSC 133" \
+    || { echo "FAIL: old marker sequence = ${old_proxy@q}"; exit 1; }
+
+# A filtered command has no history id: no C/D markers (but an old proxy still
+# needs its capture reset).
+no_id=$(
+    local -x ATUIN_PTY_PROXY_ACTIVE=2
+    local -x ATUIN_HISTORY_ID=""
+    __atuin_pty_proxy_owns_tty=1
+    __atuin_mark_output_start
+    __atuin_mark_output_end 0
+)
+[[ -z "$no_id" ]] \
+    && echo "PASS: no markers without a history id" \
+    || { echo "FAIL: unexpected markers ${no_id@q}"; exit 1; }
+
+reset=$(
+    local -x ATUIN_PTY_PROXY_ACTIVE=1
+    local -x ATUIN_HISTORY_ID="test-id"
+    __atuin_pty_proxy_owns_tty=1
+    __atuin_needs_osc133_reset=1
+    __atuin_mark_output_start
+)
+[[ "$reset" == $'\033]133;B\a'* && "$reset" == *$'\033]133;C\a'* ]] \
+    && echo "PASS: old pty-proxy capture is reset before the next command" \
+    || { echo "FAIL: reset marker = ${reset@q}"; exit 1; }
+
+# No proxy: no markers at all, and the prompt is left untouched (18.24 no
+# longer wraps PROMPT/RPROMPT with OSC 133 prompt markers).
+__atuin_pty_proxy_owns_tty=0
+PROMPT='prompt>' RPROMPT='<rprompt'
+ATUIN_HISTORY_ID=""
+_atuin_native_precmd
+[[ "$PROMPT" == 'prompt>' && "$RPROMPT" == '<rprompt' ]] \
+    && echo "PASS: prompt is not wrapped for output capture" \
+    || { echo "FAIL: PROMPT=${PROMPT@q} RPROMPT=${RPROMPT@q}"; exit 1; }
+
 zmodload -u atuin_native
 echo "PASS: module unloaded"
 

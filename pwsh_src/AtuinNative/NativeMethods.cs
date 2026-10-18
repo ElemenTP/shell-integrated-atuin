@@ -150,7 +150,7 @@ internal static unsafe partial class NativeMethods
 
     /// <summary>
     /// Create the process-wide history session using the data directory
-    /// resolved from the user's Atuin configuration (ATUIN_DATA_DIR, XDG, or
+    /// resolved from the user's Atuin configuration (ATUIN_DATA_DIR, ATUIN_HOME, XDG, or
     /// config.toml), exactly like the official CLI. Returns
     /// <see cref="IntPtr.Zero"/> on success (including when a session is
     /// already active), or an allocated error string when creation failed.

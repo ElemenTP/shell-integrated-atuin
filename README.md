@@ -146,7 +146,9 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 4. 安装 zsh-autosuggestions 的 `atuin_native` strategy。无论插件在 zsh-autosuggestions **之前还是之后** source，都会把 `atuin_native` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`（变量未设置时直接设为 `(atuin_native)`）。strategy 故意不叫官方的 `atuin`，避免与 `atuin init zsh` 安装的策略同名冲突
 5. 定义 `atuin-search` / `atuin-up-search` 等兼容 ZLE widget
 6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）；设置 `ATUIN_NOBIND` 可跳过绑定（同官方）
-7. 支持 OSC 133 标记（`__atuin_pty_proxy_owns_tty=1` 时，逻辑与官方 `atuin.zsh` 相同）
+7. 支持输出捕获标记（`__atuin_pty_proxy_owns_tty=1` 时，逻辑与官方 `atuin.zsh` 相同）：
+   18.24 起使用 Atuin 自己的 `\033]18188735;C|D;…\a` 序列，仅对旧 pty-proxy
+   （`ATUIN_PTY_PROXY_ACTIVE=1`）保留 OSC 133
 
 与官方 `atuin init zsh` 的差异（这些功能依赖外部 `atuin` 二进制或 daemon，进程内无法提供）：
 
@@ -215,7 +217,8 @@ Invoke-AtuinSearch -KeymapMode ([AtuinNative.AtuinKeymapMode]::VimNormal)  # vi 
 现有 session；`Shutdown()` 幂等）：
 
 ```powershell
-# 无参数：数据目录与官方 CLI 一样由配置解析（ATUIN_DATA_DIR / XDG / config.toml）
+# 无参数：数据目录与官方 CLI 一样由配置解析
+# （ATUIN_DATA_DIR / ATUIN_HOME / XDG / config.toml 的 data_dir）
 [AtuinNative.Session]::Initialize()
 $id = [AtuinNative.Session]::HistoryStart("my-command", (Get-Location).Path)
 # author / authorKind / intent 对应官方 --author / --author-kind / --intent：
@@ -244,8 +247,9 @@ $report = [AtuinNative.Session]::GetStatsReport()   # 一行摘要
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `ATUIN_DATA_DIR` | `~/.local/share/atuin` | 数据目录（`history.db`、`records.db`、key）；与官方 CLI 一致由 Settings 解析 |
-| `ATUIN_CONFIG_DIR` | `~/.config/atuin` | config.toml 所在目录（官方 CLI 同样支持） |
+| `ATUIN_DATA_DIR` | `~/.atuin/data`（存在旧版 XDG 数据时沿用旧目录） | 数据目录（`history.db`、`records.db`、`meta.db`、key）；与官方 CLI 一致由 Settings 解析，等价于 config.toml 的 `data_dir` |
+| `ATUIN_HOME` | `~/.atuin` | atuin 18.24 起的统一目录（必须是绝对路径）：默认数据目录为其下的 `data/`，config/themes 也在其中；设置 `ATUIN_DATA_DIR` 仍可单独覆盖数据目录 |
+| `ATUIN_CONFIG_DIR` | `~/.atuin`（旧安装为 `~/.config/atuin`） | config.toml / server.toml 所在目录（官方 CLI 同样支持） |
 | `ATUIN_SESSION` | 插件自动设置 | 当前 shell 会话 UUID |
 | `ATUIN_NATIVE_DIR` | 插件自动探测 | zsh 模块与 FFI 库目录 |
 | `ATUIN_FFI_PATH` | `AtuinNative.dll` 同目录 | pwsh 使用的 FFI 库路径 |

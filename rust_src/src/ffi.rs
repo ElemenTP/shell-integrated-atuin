@@ -338,7 +338,8 @@ fn filter_mode(value: c_int) -> Option<FilterMode> {
 /// Create the process-wide history session.
 ///
 /// The Atuin data directory is resolved from the user's configuration exactly
-/// like the official CLI: `ATUIN_DATA_DIR` / XDG, or `data_dir` in config.toml.
+/// like the official CLI: `ATUIN_DATA_DIR` (or `ATUIN_HOME`, XDG, and
+/// `data_dir` in config.toml under it, with the 18.24 unified-home rules).
 ///
 /// Returns NULL on success. Calling it while a session is already active is a
 /// successful no-op that keeps the existing session.

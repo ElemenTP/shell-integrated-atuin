@@ -75,14 +75,16 @@ Settings::builder()?.build()?.try_deserialize()?
 正确写法是直接调用 `Settings::new()?`，它内部执行同样的配置解析并注册 meta store。
 
 `Session::new()` 不接受 data-dir 参数，完全依赖 `Settings::new()` 解析出的
-`settings.db_path` / `record_store_path` / `key_path`，因此 `ATUIN_DATA_DIR`、
-XDG 与 config.toml 中的 `data_dir` 都按官方优先级生效，FFI 也无法覆盖它。
+`settings.db_path` / `record_store_path` / `key_path` / `settings.data_dir`，因此
+`ATUIN_DATA_DIR`、`ATUIN_HOME`（18.24 起的统一目录）、XDG 与 config.toml 中的
+`data_dir` 都按官方优先级生效，FFI 也无法覆盖它。
 底层 `Session::new_with_datadir(Option<&Path>)` 保留下来：FFI 内的私有辅助函数
 `atuin_init_with_datadir` 在测试里显式传目录，让每个单元测试拥有独立
 数据目录；导出符号 `atuin_init` 只是以 `NULL` 调用它，所以 shell 侧
 始终跟随配置。
 
-因为 `DATA_DIR` / `META_CONFIG` / `META_STORE` 都是进程级全局状态，FFI 只维护
+因为 meta store 是进程级全局状态（`Settings` 现在每个实例都带 `data_dir`，但
+meta 池仍是进程内唯一），FFI 只维护
 **一个进程级 session**（`static SESSION: Mutex<Option<SessionHandle>>`，命名与
 starship wrapper 的 `ssp_init` / `ssp_shutdown` 对齐）：`atuin_init` 幂等
 （已有 session 时成功且保留原 session）、`atuin_shutdown` 幂等、其余导出在无
@@ -99,12 +101,16 @@ Arc，因此调用返回即释放锁，而 `search_interactive` 在 TUI 期间�
 `Session::Drop` 调用 `Settings::shutdown_process_state()`：
 
 - `close_meta_store()` 关闭 meta.db 的 sqlx worker 并把全局槽置空，下一次
-  `meta_store()` 重新打开连接池；
-- `DATA_DIR` / `META_CONFIG` 从 `OnceLock` 改为可清空的 `RwLock<Option<_>>`
-  （写入仍是“首次生效”，保持 CLI 行为），清空后下一次 `Settings::new()` 会按新的
-  `ATUIN_DATA_DIR` / config.toml 重新解析。否则 history.db/records.db 用新目录、
-  meta.db 却留在旧目录，形成分裂状态；
-- `reset_tui_input()` 释放 `in_process_event` 里缓存 `/dev/tty` 的 `OnceLock`，
+  `meta_store()` 重新打开连接池。上游 18.24 把 `meta_store` 从静态方法改成
+  `&self` 并用函数内 `OnceCell` 缓存，我们保留了可清空的
+  进程级 `Arc<MetaStore>` 槽（`META_STORE: RwLock<Option<Arc<_>>>`），否则
+  `dlclose` 前无法 join 它的 worker；
+- 上游 18.24 删除了 `DATA_DIR` / `META_CONFIG` 这两个进程级路径缓存：`data_dir`
+  现在是 `Settings` 的字段、`meta_store()` 直接从 `self` 取路径，所以每次
+  `Settings::new()` 都会按 `ATUIN_DATA_DIR` / `ATUIN_HOME` / config.toml 重新解析，
+  不会出现 history.db 用新目录、meta.db 留在旧目录的分裂状态（这段逻辑已随
+  rebase 移除）；
+- `reset_tui_input()` 释放 `in_process_event` 里缓存的终端句柄与缓冲输入，
   避免上一个 session 的 fd 与残留输入泄漏到下一个 session 或 `dlclose` 之后。
 
 其余静态变量（`theme` / `history::all_user_author_filter` 的 `LazyLock`、
@@ -131,6 +137,36 @@ history_store.push(h).await?; // 加密后写入 records.db
 - `Session` 不再在 `atuin-client` 中重复实现 history/search/TUI，而是调用
   `crates/atuin/src/command/client/{history,search}/...` 中的上游命令代码，
   同步上游功能时只需要跟上 CLI 实现
+
+### 1.5 上游 v18.23.0 → v18.24.1 变更审阅
+
+v18.24 是一个跨度很大的版本（153 个提交），大部分是 AI sessions/threads、
+octavo、output capture、daemon 与 server 的内部演进。与进程内集成相关的部分如下。
+
+**已适配**：
+
+| 变更 | 处理 |
+|---|---|
+| `Settings::meta_store`/`host_id`/`last_sync`… 由静态方法改为 `&self`；`Settings` 去掉 `Clone` | rebase 时改为 `&self` + 进程级可清空 `Arc<MetaStore>`；`Settings` 重新 `derive(Clone)`，供 `Session::search` 复制一份应用 per-call override |
+| `Settings.data_dir` 从 `Option<String>` 改为 `PathBuf`，删除 `effective_data_dir`/`DATA_DIR`/`META_CONFIG` | 删除对应静态缓存；路径全部来自 `Settings` 实例（见 1.2.1） |
+| `current_context(settings)`、`OptFilters::{timezone, dialect}`、`ThemeManager::from_settings`、`interactive::history(&Arc<Settings>)` | `session.rs` 按新签名调用 |
+| `history start` 重构为 `make_starting_history` + `handle_start(db, &h)`；`end_history_entry` 改 `&Arc<Settings>` | 保留我们的 `handle_start_with_cwd` 薄封装（显式 cwd），其余走上游结构 |
+| **输出捕获标记协议**：OSC 133 → `\033]18188735;C|D;…\a`，旧 pty-proxy 保留 OSC 133；不再包裹 PROMPT/RPROMPT | **zsh 插件已移植**（`__atuin_mark_output_start/end` + `__atuin_needs_osc133_reset`），并加了 5 项插件测试 |
+| **`ATUIN_HOME` 统一数据目录**（默认 `~/.atuin`，存在旧 XDG 数据时沿用） | 无需改代码：`Session` 一直跟随 `Settings`；文档已更新（`ATUIN_DATA_DIR` 仍作为 `data_dir` 的 env 覆盖生效） |
+| **secrets 过滤扩展**：新增已知格式（GitHub/Slack/云 key…）、`*_PASSPHRASE=`、HashiCorp token | 无需改代码：进程内 `history_start` 走同一个 `History::should_save` → `contains_secret`。新增 C# 回归测试锁定该行为 |
+| `accept-cd` / `return-cd` 键位动作 | 无需改代码：TUI 通过既有 `__atuin_accept__:` 协议返回 `cd -- '<cwd>'`（PowerShell 为 `Set-Location -LiteralPath`），插件用 `ATUIN_SHELL=zsh|powershell` 让上游按对应 shell 转义 |
+
+**相关但进程内不提供（有意跳过）**：
+
+- `atuin-ai-resume` / `atuin threads resume --shell-widget` widget：依赖 AI session
+  捕获、`threads.db` 与 daemon，本模块只做历史搜索；插件不定义该 widget，用户仍可
+  用官方 `atuin init zsh` 的对应 widget（两者可共存）。
+- octavo 上传、output capture（`atuin pty-proxy` 本体）、MCP、`atuin config disable`
+  （只影响 daemon/threads/octavo）、daemon 的 hook 超时与记录写入顺序、server/sync
+  的认证与密码文件、bash/fish/nushell/xonsh 模板：都与进程内路径无关。
+- `ATUIN_*` 环境变量覆盖 config.toml（#4438）：我们的插件只设置 `ATUIN_SHELL` /
+  `ATUIN_SESSION` / `ATUIN_SHLVL` / `ATUIN_HISTORY_ID`，它们不是 `Settings` 字段或
+  会被忽略；`ATUIN_DATA_DIR`/`ATUIN_CONFIG_DIR` 的既有语义不变。
 
 ## 2. Rust FFI 层
 
@@ -493,8 +529,11 @@ preexec 的最后一条命令如果是 `[[ cond ]] || return`，在 cond 为假�
   `("atuin_native")`），因此插件在 zsh-autosuggestions 之前或之后 source 都生效。
   strategy 故意不叫官方的 `atuin`，避免与 `atuin init zsh` 安装的策略冲突；
   旧实现只在 `ZSH_AUTOSUGGEST_STRATEGY` 已存在时安装，属于与官方不一致的缺陷。
-- OSC 133 使用官方同款 `__atuin_pty_proxy_owns_tty` 契约，`133;D` 格式与官方
-  一致（`history_id=`，不再附带自定义的 `session_id=`）。
+- 输出捕获标记使用官方同款 `__atuin_pty_proxy_owns_tty` 契约。18.24 起官方把
+  OSC 133 换成了 `\033]18188735;C|D;…\a`（因为 OSC 133 与其它 prompt 工具冲突），
+  并对旧 pty-proxy（`ATUIN_PTY_PROXY_ACTIVE=1`）保留 `133;C` / `133;D;<exit>;history_id=`。
+  插件已同步：不再包裹 PROMPT/RPROMPT，旧 proxy 场景下首次命令前会发一个
+  `133;B` 复位标记。
 - 键位绑定尊重 `ATUIN_NOBIND`；pwsh 退出 TUI 后调用 `InvokePrompt` 并遵循
   `ATUIN_POWERSHELL_PROMPT_OFFSET`（未设置时按 prompt 行数推导）。
 

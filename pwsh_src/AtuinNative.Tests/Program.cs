@@ -182,6 +182,19 @@ try
         string? filtered = Session.HistoryStart(" filtered-out", "/tmp");
         Check(filtered is null, "HistoryStart returns null for a filtered command");
 
+        // Atuin 18.24 extended the built-in secret formats it filters out of
+        // history (GitHub/Slack/cloud tokens, *.PASSPHRASE assignments, ...).
+        // The in-process history start must apply the same `should_save` rules
+        // as `atuin history start --hook`, or the shell would record secrets
+        // the CLI redacts. `secrets_filter` is on by default.
+        //
+        // The fixture uses Atuin's name-based rule (`AWS_SECRET_ACCESS_KEY`)
+        // rather than a token-shaped literal: GitHub push protection blocks
+        // anything that looks like a real credential, even a fake one, and the
+        // token formats themselves are already covered by upstream's own tests.
+        string? secret = Session.HistoryStart("export AWS_SECRET_ACCESS_KEY=abc", "/tmp");
+        Check(secret is null, "HistoryStart returns null for a command containing a secret");
+
         // ── Session stats ───────────────────────────────────────────────
         AtuinStats stats = Session.GetStats();
         Check(stats.HistoryStarts >= 1, "stats counts history starts");

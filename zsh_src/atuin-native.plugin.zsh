@@ -22,7 +22,8 @@
 #   * `atuin ai inline` natural-language mode (the `?` widget).
 #   * `atuin __internal prepare-search-index` (the in-process search goes
 #     straight to SQLite, so there is no external index to warm).
-# Everything else — hooks, comment-line history, OSC 133 markers, autosuggest
+# Everything else — hooks, comment-line history, output-capture markers (the
+# 18.24 Atuin sequence, with OSC 133 for an old pty-proxy), autosuggest
 # strategy, widgets, key bindings and ATUIN_NOBIND — matches the official
 # script.
 
@@ -164,45 +165,48 @@ ATUIN_HISTORY_ID=""
 # terminal is the child of a live PTY proxy. In-process there is no external
 # binary to ask, so ATUIN_PTY_PROXY_ACTIVE is taken as the marker; a value set
 # by the PTY proxy preamble wins (the preamble sets __atuin_pty_proxy_owns_tty
-# before this file is sourced).
+# before this file is sourced). Convention since atuin 18.24: the current
+# proxy sets it to 2, older proxies only ever set it to 1.
 if [[ -z ${__atuin_pty_proxy_owns_tty-} ]]; then
     __atuin_pty_proxy_owns_tty=0
     [[ -n "${ATUIN_PTY_PROXY_ACTIVE-}" ]] && __atuin_pty_proxy_owns_tty=1
 fi
 
-# ---- OSC 133 markers (identical to official atuin.zsh) ---------------------
-__atuin_osc133_command_executed() {
-    [[ "${__atuin_pty_proxy_owns_tty:-0}" = 1 ]] || return 0
+# ---- Output-capture markers (mirrors the official atuin.zsh) ----------------
+# The PTY proxy turns command output into a captured history record between
+# these markers. atuin 18.24 switched from OSC 133 to Atuin's own sequence
+# (18188735), because OSC 133 collides with other prompt tooling; a proxy that
+# only knows the old protocol still gets OSC 133, keyed off
+# ATUIN_PTY_PROXY_ACTIVE=1.
+__atuin_mark_output_start() {
+    [[ ${__atuin_pty_proxy_owns_tty-} = 1 ]] || return 0
+
+    if [[ -n ${__atuin_needs_osc133_reset-} ]]; then
+        unset -v __atuin_needs_osc133_reset
+        # Old pty-proxy will reset an in-progress capture on a `B` marker.
+        # Always reset, even if there's no history ID, to avoid capturing a
+        # filtered command.
+        printf '\033]133;B\a'
+    fi
+
     [[ -n "${ATUIN_HISTORY_ID:-}" ]] || return 0
-    printf '\033]133;C\a'
-}
 
-__atuin_osc133_command_finished() {
-    [[ "${__atuin_pty_proxy_owns_tty:-0}" = 1 ]] || return 0
-    [[ -n "${ATUIN_HISTORY_ID:-}" ]] || return 0
-    printf '\033]133;D;%s;history_id=%s\a' "$1" "$ATUIN_HISTORY_ID"
-}
-
-__atuin_osc133_prompt_start=$'%{\033]133;A;cl=line\a%}'
-__atuin_osc133_prompt_end=$'%{\033]133;B\a%}'
-
-__atuin_osc133_wrap_prompt() {
-    local __atuin_orig_prompt="${PROMPT-}"
-    local __atuin_orig_rprompt="${RPROMPT-${RPS1-}}"
-
-    local __atuin_prompt="$__atuin_orig_prompt"
-    local __atuin_rprompt="$__atuin_orig_rprompt"
-    __atuin_prompt="${__atuin_prompt//$__atuin_osc133_prompt_start/}"
-    __atuin_prompt="${__atuin_prompt//$__atuin_osc133_prompt_end/}"
-    __atuin_rprompt="${__atuin_rprompt//$__atuin_osc133_prompt_start/}"
-    __atuin_rprompt="${__atuin_rprompt//$__atuin_osc133_prompt_end/}"
-
-    if [[ "${__atuin_pty_proxy_owns_tty:-0}" = 1 ]]; then
-        PROMPT="${__atuin_osc133_prompt_start}${__atuin_prompt}"
-        RPROMPT="${__atuin_rprompt}${__atuin_osc133_prompt_end}"
+    if [[ ${ATUIN_PTY_PROXY_ACTIVE-} = 1 ]]; then
+        # Old proxy: OSC 133, as every atuin before 18.24 emitted.
+        printf '\033]133;C\a'
     else
-        [[ "$__atuin_orig_prompt" == "$__atuin_prompt" ]] || PROMPT="$__atuin_prompt"
-        [[ "$__atuin_orig_rprompt" == "$__atuin_rprompt" ]] || RPROMPT="$__atuin_rprompt"
+        printf '\033]18188735;C;%s\a' "$ATUIN_HISTORY_ID"
+    fi
+}
+
+__atuin_mark_output_end() {
+    [[ ${__atuin_pty_proxy_owns_tty-} = 1 ]] || return 0
+    [[ -n "${ATUIN_HISTORY_ID:-}" ]] || return 0
+
+    if [[ ${ATUIN_PTY_PROXY_ACTIVE-} = 1 ]]; then
+        printf '\033]133;D;%s;history_id=%s\a' "$1" "$ATUIN_HISTORY_ID"
+    else
+        printf '\033]18188735;D;%s\a' "$ATUIN_HISTORY_ID"
     fi
 }
 
@@ -216,7 +220,7 @@ _atuin_native_preexec() {
     ATUIN_HISTORY_ID=""
     atuin_history_start >/dev/null 2>&1
     export ATUIN_HISTORY_ID="${ATUIN_HISTORY_ID:-}"
-    __atuin_osc133_command_executed
+    __atuin_mark_output_start
     __atuin_preexec_time=${EPOCHREALTIME-}
 }
 
@@ -224,9 +228,7 @@ _atuin_native_preexec() {
 _atuin_native_precmd() {
     local EXIT="$?" __atuin_precmd_time=${EPOCHREALTIME-}
 
-    __atuin_osc133_wrap_prompt
-
-    [[ -z "${ATUIN_HISTORY_ID:-}" ]] && return
+    [[ -z "${ATUIN_HISTORY_ID:-}" ]] && return 0
 
     local duration=""
     if [[ -n "${__atuin_preexec_time:-}" && -n "${__atuin_precmd_time:-}" ]]; then
@@ -235,7 +237,7 @@ _atuin_native_precmd() {
         ((duration < 0)) && duration=0
     fi
 
-    __atuin_osc133_command_finished "$EXIT"
+    __atuin_mark_output_end "$EXIT"
 
     # Fire-and-forget (default), matching `(... atuin history end ... &)`.
     # Add ATUIN_HISTORY_SYNC=1 for debugging.
@@ -377,4 +379,12 @@ if [[ -o interactive ]] && [[ -z "${ATUIN_NOBIND:-}" ]]; then
     bindkey -M vicmd '^[OA' atuin-up-search-vicmd
     bindkey -M viins '^[OA' atuin-up-search-viins
     bindkey -M vicmd 'k' atuin-up-search-vicmd
+fi
+
+# An old proxy (ATUIN_PTY_PROXY_ACTIVE=1) may already have started capturing
+# output from a `C` marker the outer shell sent. Clear that state before the
+# first command's output starts, or the prompt and the command itself would be
+# captured too. (New proxies do not need this: they key off their own sequence.)
+if [[ ${__atuin_pty_proxy_owns_tty-} = 1 ]] && [[ ${ATUIN_PTY_PROXY_ACTIVE-} = 1 ]]; then
+    __atuin_needs_osc133_reset=1
 fi

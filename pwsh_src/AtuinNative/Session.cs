@@ -44,7 +44,7 @@ public static class Session
 {
     /// <summary>
     /// Create the process-wide history session. The Atuin data directory is
-    /// resolved from the user's configuration (ATUIN_DATA_DIR, XDG, or
+    /// resolved from the user's configuration (ATUIN_DATA_DIR, ATUIN_HOME, XDG, or
     /// config.toml), exactly like the official CLI. Calling it while a session
     /// is already active is an idempotent no-op that keeps that session.
     /// </summary>

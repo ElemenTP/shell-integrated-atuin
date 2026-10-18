@@ -107,7 +107,8 @@ Atuin 源码通过 `#[cfg(feature = "in-process")]` 做最小化加法修改，
  * NULL = 成功；非 NULL = Rust 分配的 UTF-8 错误信息，调用方用 atuin_free 释放。 */
 
 // 生命周期：进程级单 session，无 handle 参数。
-// 数据目录与官方 CLI 一样由配置解析（ATUIN_DATA_DIR / XDG / config.toml 的 data_dir）。
+// 数据目录与官方 CLI 一样由配置解析
+// （ATUIN_DATA_DIR / ATUIN_HOME / XDG / config.toml 的 data_dir）。
 // init 幂等（已有 session 时成功并保留它）；shutdown 幂等；其余导出在无 session 时报错。
 char *atuin_init(void);
 char *atuin_shutdown(void);
@@ -212,8 +213,10 @@ zsh 模块提供 8 个 builtin。history/search 类 builtin 不接受 argv，输
 - 与 `atuin init zsh` 相同的默认键位：emacs/viins 的 Ctrl+R、vicmd 的 `/`、
   三种 keymap 的 UpArrow、vicmd 的 `k` 都自动绑定到对应 widget；设置
   `ATUIN_NOBIND` 时跳过绑定（同官方 `init`）
-- OSC 133 标记：使用官方同款 `__atuin_pty_proxy_owns_tty` 契约与
-  `\033]133;D;<exit>;history_id=<id>\a` 格式
+- 输出捕获标记：使用官方同款 `__atuin_pty_proxy_owns_tty` 契约。18.24 起为
+  `\033]18188735;D;<id>\a`（`ATUIN_PTY_PROXY_ACTIVE=2`），仅旧 pty-proxy
+  （`ATUIN_PTY_PROXY_ACTIVE=1`）仍使用 `\033]133;D;<exit>;history_id=<id>\a`；
+  不再包裹 PROMPT/RPROMPT
 - 标准 `*.plugin.zsh` 入口 + `ATUIN_NATIVE_DIR` 模块目录发现
 - `export ATUIN_TMUX_POPUP=false`：进程内 TUI 直接在当前终端绘制
 
