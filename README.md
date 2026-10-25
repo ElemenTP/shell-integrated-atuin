@@ -60,6 +60,13 @@ cmake -B build -S . -G "Ninja Multi-Config"
 cmake --build build --config Release
 ```
 
+`AUTO` 会从 GitHub clone **固定的 commit**（`ATUIN_GIT_TAG`），而不是移动中的
+`in-process` 分支，所以构建可复现；rebase 分支后需要把 pin 更新到新的 tip
+（本地源码树的 commit 与 pin 不一致时 CMake 只给出 warning，方便开发）。
+FFI 的上报版本由 `rust_src/build.rs` 从 Atuin 源码树的 `Cargo.toml` 读取
+（CMake 也会以 `ATUIN_VERSION` 传入，可用 `-DATUIN_VERSION=` 覆盖），
+`atuin_version()` 返回的是**上游 Atuin 版本**，不是 wrapper 自己的 crate 版本。
+
 ### 使用本地源码
 
 ```bash
@@ -69,7 +76,8 @@ cmake -B build -S . -G "Ninja Multi-Config" \
 cmake --build build --config Release
 ```
 
-`ATUIN_SOURCE` 必须包含带 `in-process` feature 的 Atuin 源码树。
+`ATUIN_SOURCE` 必须包含带 `in-process` feature 的 Atuin 源码树（本地路径不参与
+pin 校验之外的处理；`ATUIN_GIT_TAG` 只影响 `ATUIN_SOURCE=AUTO`）。
 `ZSH_SOURCE` 必须已执行过 `./configure` 和 `make -C Src -f Makemod zsh.mdh`
 （或留空 `AUTO` 让 CMake 自动下载生成）。
 
@@ -98,7 +106,9 @@ sudo cmake --install build --config Release --prefix /usr/local
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `ATUIN_SOURCE` | `AUTO` | Atuin 源码：`AUTO` 从 GitHub clone `in-process` 分支，或本地路径 |
+| `ATUIN_SOURCE` | `AUTO` | Atuin 源码：`AUTO` 从 GitHub 拉取 `ATUIN_GIT_TAG`，或本地路径 |
+| `ATUIN_GIT_TAG` | `86c9d1f8…`（当前 in-process tip） | `ATUIN_SOURCE=AUTO` 时钉住的 Atuin commit；也可以写 branch/tag |
+| `ATUIN_VERSION` | 空（自动） | FFI 上报的 Atuin 版本；空则从源码树的 `Cargo.toml` 派生 |
 | `ZSH_SOURCE` | `AUTO` | zsh 源码：`AUTO` 下载 zsh 5.9.2，或已配置的源码树路径 |
 | `ZSH_VERSION` | `5.9.2` | 下载 zsh 的版本（`ZSH_SOURCE=AUTO` 时） |
 | `BUILD_ZSH_MODULE` | `ON`（Windows 为 `OFF`） | 构建 zsh 可加载模块 |

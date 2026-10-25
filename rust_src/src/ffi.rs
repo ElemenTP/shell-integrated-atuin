@@ -878,7 +878,13 @@ pub unsafe extern "C" fn atuin_session_uuid(out: *mut *const c_char) -> *mut c_c
     })
 }
 
-/// Return the library version as a static string.
+/// Return the upstream Atuin version this library embeds, as a static string.
+///
+/// This is the version of the `atuin` crate it was built against (the
+/// `in-process` feature is version-locked to it), not `atuin-ffi`'s own crate
+/// version: scripts ask "which Atuin am I running?" and that is what matters.
+/// A `build.rs` derives it from the checkout (or from `ATUIN_VERSION`, which
+/// CMake passes), and CMake pins the checkout to a commit (`ATUIN_GIT_TAG`).
 ///
 /// The returned pointer is valid for the lifetime of the process and must NOT
 /// be freed. This accessor cannot fail, so it is exempt from the error
@@ -887,7 +893,7 @@ pub unsafe extern "C" fn atuin_session_uuid(out: *mut *const c_char) -> *mut c_c
 pub extern "C" fn atuin_version() -> *const c_char {
     // A string literal has static storage duration and the trailing NUL is
     // included in the literal itself, so no LazyLock/allocation is needed.
-    static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
+    static VERSION: &str = concat!(env!("ATUIN_VERSION"), "\0");
     VERSION.as_ptr().cast()
 }
 
@@ -1170,7 +1176,9 @@ mod tests {
         let v = atuin_version();
         assert!(!v.is_null());
         let s = unsafe { CStr::from_ptr(v) }.to_str().unwrap();
-        assert_eq!(s, env!("CARGO_PKG_VERSION"));
+        assert_eq!(s, env!("ATUIN_VERSION"));
+        // A version, not a path or a commit.
+        assert_eq!(s.split('.').count(), 3, "unexpected version {s:?}");
     }
 
     #[test]

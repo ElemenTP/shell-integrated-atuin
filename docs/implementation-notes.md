@@ -655,6 +655,25 @@ zsh 模块的 `LIBRARY_OUTPUT_DIRECTORY` 在 multi-config 下会自动追加配�
 zsh 测试逻辑不写进 CMake `COMMAND` 内联字符串。`${var}`、引号层级和
 `$()` 在 CMake 与 zsh 两层展开下极易出错；统一提取为 `tests/*.sh`。
 
+### 5.4 版本号、上游 pin 与依赖锁
+
+三者的关系：
+
+- **`ATUIN_GIT_TAG`**（CMake cache）：`ATUIN_SOURCE=AUTO` 时拉取的 Atuin
+  commit（也可以是 branch/tag）。它钉住的是**上游源码**，rebase `in-process`
+  之后要手动 bump；本地 `ATUIN_SOURCE=…` 的 HEAD 与它不一致时只 warning。
+- **`ATUIN_VERSION`**（CMake cache，空则自动）：从 `${ATUIN_SRC_DIR}/Cargo.toml`
+  的 `version = "x.y.z"` 解析。`rust_src/build.rs` 通过环境变量拿到它（直接
+  `cargo build` 时则自己读 `../atuin/Cargo.toml`），以
+  `cargo:rustc-env=ATUIN_VERSION=…` 注入；`atuin_version()` 返回的就是它。
+  Cargo 的 `[package].version` 只能是字面量，无法从依赖派生，所以
+  `atuin-ffi` 自己的 crate 版本保持独立（当前 0.1.0），语义是 wrapper 版本。
+- **`rust_src/Cargo.lock`**：bump 上游后必须刷新。v18.24.2 的 tty 助手用了
+  tokio 1.54 的 `AsyncFd::register`，而旧锁停在 1.53.1，release 构建（FFI 的
+  `default-features = false` 特性集）会直接编译失败。刷新命令：
+  `cargo update --manifest-path rust_src/Cargo.toml`（或按需 `-p <crate>`）。
+  这个坑 debug 构建不会暴露，因为 atuin 仓库的 `cargo check` 用的是默认特性。
+
 ## 6. 测试策略
 
 | 层级 | 目标 | 工具 |

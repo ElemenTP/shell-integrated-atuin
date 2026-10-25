@@ -123,6 +123,7 @@ DOTNET_ROLL_FORWARD=Major \
 | `PWSH` | `pwsh` | TUI pty 测试使用的 PowerShell 可执行文件 |
 | `DLL_DIR` | pwsh Release 输出目录 | pwsh 测试模块目录 |
 | `ATUIN_FFI_PATH` | 模块/程序集同目录 | 显式指定 native FFI 库路径 |
+| `ATUIN_VERSION` | CMake 从 Atuin 源码树派生 | C# 测试据此断言 `atuin_version` 与嵌入的上游版本一致 |
 
 ## fork guard 测试注意事项
 

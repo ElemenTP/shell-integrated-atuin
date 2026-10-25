@@ -82,7 +82,16 @@ try
     AtuinEnvironment.Set("ATUIN_DATA_DIR", dataDir);
 
     // ── Static metadata ────────────────────────────────────────────────
-    CheckEqual(Session.Version(), "0.1.0", "native version");
+    // The native library reports the upstream Atuin version it was built
+    // against. CMake passes the same value to this test; a plain `dotnet run`
+    // only gets the semver shape.
+    string expectedVersion = Environment.GetEnvironmentVariable("ATUIN_VERSION") ?? "";
+    string nativeVersion = Session.Version();
+    if (expectedVersion.Length > 0)
+        CheckEqual(nativeVersion, expectedVersion, "native version matches the atuin dependency");
+    else
+        Check(System.Text.RegularExpressions.Regex.IsMatch(nativeVersion, @"^\d+\.\d+\.\d+"),
+            $"native version is a semver (got '{nativeVersion}')");
 
     // ── Session lifecycle ──────────────────────────────────────────────
     Session.Initialize();

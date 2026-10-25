@@ -158,7 +158,7 @@ const char *atuin_version(void);
 | 任意失败调用的返回值 | Rust 分配的错误信息 | `atuin_free` |
 | `atuin_session_uuid` → `*out` | session 持有 | 不可释放 |
 | `atuin_stats` → `*out` | 纯值快照（无指针） | 不可释放 |
-| `atuin_version` | 静态字符串 | 不可释放 |
+| `atuin_version` | 静态字符串（上游 atuin 版本） | 不可释放 |
 
 失败时输出参数（`id_out` / `out` / `uuid out`）会先被重置为
 NULL，避免调用方持有上一次成功调用的悬垂指针。错误信息随返回值返回，不再有

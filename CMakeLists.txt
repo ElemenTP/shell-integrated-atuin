@@ -21,6 +21,14 @@ option(BUILD_TESTS        "Build test executables"                          ON)
 # Atuin source: "AUTO" (clone from GitHub) or a local path.
 set(ATUIN_SOURCE "AUTO" CACHE STRING
     "Atuin source: 'AUTO' to clone from GitHub, or a local path")
+# The in-process feature is developed on a branch, so pin the commit (not the
+# moving branch) to keep AUTO builds reproducible. Bump this after rebasing the
+# branch; a local ATUIN_SOURCE checkout that differs only gets a warning.
+set(ATUIN_GIT_TAG "86c9d1f8718ea0deab10d2e0b368ef1f9d4530f6" CACHE STRING
+    "Atuin commit/tag to fetch when ATUIN_SOURCE=AUTO")
+# The Atuin version the FFI reports. Empty = derive it from the checkout.
+set(ATUIN_VERSION "" CACHE STRING
+    "Atuin version embedded in the FFI (empty: derive from ATUIN_SRC_DIR/Cargo.toml)")
 # zsh source: "AUTO" (download zsh 5.9.2) or a local path to configured tree.
 set(ZSH_SOURCE "AUTO" CACHE STRING
     "zsh source: 'AUTO' to download zsh 5.9.2, or path to configured source tree")
@@ -50,11 +58,18 @@ endif()
 # ══════════════════════════════════════════════════════════════════════════
 set(ATUIN_LINK "${CMAKE_SOURCE_DIR}/atuin")
 if(ATUIN_SOURCE STREQUAL "AUTO")
-    message(STATUS "Fetching atuin from GitHub (in-process branch)...")
+    message(STATUS "Fetching atuin from GitHub (${ATUIN_GIT_TAG})...")
+    # `GIT_SHALLOW` cannot check out a commit that is not the branch tip, so
+    # only shallow-clone when the pin names a branch or tag.
+    if(ATUIN_GIT_TAG MATCHES "^[0-9a-f]{7,40}$")
+        set(_atuin_shallow FALSE)
+    else()
+        set(_atuin_shallow TRUE)
+    endif()
     FetchContent_Declare(atuin-src
         GIT_REPOSITORY "https://github.com/ElemenTP/atuin"
-        GIT_TAG        in-process
-        GIT_SHALLOW    TRUE
+        GIT_TAG        "${ATUIN_GIT_TAG}"
+        GIT_SHALLOW    ${_atuin_shallow}
     )
     FetchContent_MakeAvailable(atuin-src)
     set(ATUIN_SRC_DIR "${atuin-src_SOURCE_DIR}")
@@ -65,6 +80,40 @@ else()
     endif()
 endif()
 message(STATUS "Atuin source: ${ATUIN_SRC_DIR}")
+
+# ── Atuin version (embedded in the FFI) ───────────────────────────────────
+# The FFI reports the version of the Atuin it embeds, so derive it from the
+# resolved checkout instead of duplicating it in this file.
+if(NOT ATUIN_VERSION)
+    file(STRINGS "${ATUIN_SRC_DIR}/Cargo.toml" _atuin_version_line
+        REGEX "^version = \"[0-9]+\\.[0-9]+\\.[0-9]+")
+    if(_atuin_version_line)
+        string(REGEX MATCH "\"([^\"]+)\"" _atuin_version_match "${_atuin_version_line}")
+        set(ATUIN_VERSION "${CMAKE_MATCH_1}")
+    endif()
+endif()
+if(NOT ATUIN_VERSION)
+    message(FATAL_ERROR
+        "Could not read the atuin version from ${ATUIN_SRC_DIR}/Cargo.toml; "
+        "pass -DATUIN_VERSION=<x.y.z>")
+endif()
+message(STATUS "Atuin version: ${ATUIN_VERSION}")
+
+# A local checkout may be ahead of/behind the pin (an in-tree development
+# build); warn, but keep it buildable.
+if(EXISTS "${ATUIN_SRC_DIR}/.git")
+    execute_process(
+        COMMAND git -C "${ATUIN_SRC_DIR}" rev-parse HEAD
+        OUTPUT_VARIABLE _atuin_head
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _atuin_git_rc
+        ERROR_QUIET)
+    if(_atuin_git_rc EQUAL 0 AND NOT _atuin_head STREQUAL ATUIN_GIT_TAG)
+        message(WARNING
+            "Atuin checkout ${_atuin_head} differs from the pinned ATUIN_GIT_TAG "
+            "${ATUIN_GIT_TAG}; pass -DATUIN_GIT_TAG to update the pin")
+    endif()
+endif()
 
 # Create a symlink so rust_src/Cargo.toml path dependency resolves correctly:
 #   atuin = { path = "../atuin/crates/atuin", features = ["client", "in-process"] }
@@ -153,6 +202,7 @@ set(FFI_SHARED "${RUST_SRC_DIR}/target/${CARGO_PROFILE_DIR}/${FFI_NAME}")
 # or one of the inputs below changed.
 set(ATUIN_FFI_DEPENDS
     "${RUST_SRC_DIR}/src"
+    "${RUST_SRC_DIR}/build.rs"
     "${RUST_SRC_DIR}/Cargo.toml"
     "${RUST_SRC_DIR}/Cargo.lock"
 )
@@ -187,7 +237,12 @@ endif()
 
 add_custom_command(
     OUTPUT "${FFI_SHARED}"
-    COMMAND ${CARGO} build ${CARGO_RELEASE_FLAG}
+    # build.rs embeds ATUIN_VERSION (and ATUIN_COMMIT) in the library, so the
+    # reported version follows the Atuin checkout we build against.
+    COMMAND ${CMAKE_COMMAND} -E env
+        "ATUIN_VERSION=${ATUIN_VERSION}"
+        "ATUIN_COMMIT=${ATUIN_GIT_TAG}"
+        ${CARGO} build ${CARGO_RELEASE_FLAG}
     ${ATUIN_FFI_FIX}
     WORKING_DIRECTORY "${RUST_SRC_DIR}"
     DEPENDS ${ATUIN_FFI_DEPENDS}
@@ -456,6 +511,7 @@ if(BUILD_TESTS)
             COMMAND ${CMAKE_COMMAND} -E env
                 "DOTNET_ROLL_FORWARD=Major"
                 "ATUIN_FFI_PATH=${FFI_SHARED}"
+                "ATUIN_VERSION=${ATUIN_VERSION}"
                 ${DOTNET} run --no-build -c "$<CONFIG>" --project "${PWSH_TEST_PROJECT}"
             DEPENDS atuin_ffi
             USES_TERMINAL
