@@ -102,7 +102,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -113,7 +113,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -229,7 +229,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atuin"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "ansi-to-tui",
  "async-trait",
@@ -254,7 +254,6 @@ dependencies = [
  "frizbee",
  "futures-util",
  "i18n-embed",
- "i18n-embed-fl",
  "indicatif",
  "interim",
  "itertools 0.15.0",
@@ -262,6 +261,7 @@ dependencies = [
  "locked-tripwire",
  "mio",
  "norm",
+ "rand 0.8.7",
  "ratatui",
  "regex",
  "rpassword",
@@ -291,11 +291,12 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "atuin-client"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -313,6 +314,7 @@ dependencies = [
  "eyre",
  "fs-err",
  "futures",
+ "i18n-embed",
  "indicatif",
  "interim",
  "itertools 0.15.0",
@@ -328,6 +330,7 @@ dependencies = [
  "reqwest-middleware",
  "rmp-serde",
  "rusqlite",
+ "rust-embed",
  "rusty_paserk",
  "rusty_paseto",
  "secrecy",
@@ -349,17 +352,18 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
 name = "atuin-common"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "async-stream",
  "base64",
  "bytes",
  "bytesize",
+ "colored",
  "crypto_secretbox",
  "derive_more",
  "dirs",
@@ -371,6 +375,8 @@ dependencies = [
  "getrandom 0.4.3",
  "glob-match",
  "humantime",
+ "i18n-embed",
+ "i18n-embed-fl",
  "itertools 0.15.0",
  "libsqlite3-sys",
  "memchr",
@@ -384,6 +390,7 @@ dependencies = [
  "ref-cast",
  "regex",
  "rmp",
+ "rust-embed",
  "rustix",
  "rusty_paserk",
  "rusty_paseto",
@@ -408,6 +415,7 @@ dependencies = [
  "tokio-util",
  "toml_edit",
  "tracing",
+ "tracing-subscriber",
  "typed-builder",
  "unicode-segmentation",
  "unicode-width",
@@ -416,11 +424,12 @@ dependencies = [
  "windows-sys 0.61.2",
  "xxhash-rust",
  "zeroize",
+ "zstd 0.14.3",
 ]
 
 [[package]]
 name = "atuin-domain"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "async-trait",
  "atuin-common",
@@ -449,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-dotfiles"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -477,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-history"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "atuin-client",
  "crossterm",
@@ -489,14 +498,16 @@ dependencies = [
 
 [[package]]
 name = "atuin-kv"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "atuin-client",
  "atuin-common",
  "atuin-domain",
  "derive_more",
  "eyre",
+ "i18n-embed",
  "rmp",
+ "rust-embed",
  "semver",
  "sqlx",
  "tokio",
@@ -507,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-scripts"
-version = "18.24.2"
+version = "18.24.4"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -515,8 +526,10 @@ dependencies = [
  "derive_more",
  "easy-cast",
  "eyre",
+ "i18n-embed",
  "minijinja",
  "rmp",
+ "rust-embed",
  "semver",
  "serde",
  "serde_json",
@@ -860,7 +873,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -886,8 +899,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
- "zstd",
- "zstd-safe",
+ "zstd 0.13.3",
+ "zstd-safe 7.2.4",
 ]
 
 [[package]]
@@ -1327,7 +1340,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1442,7 +1455,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2888,7 +2901,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3875,7 +3888,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4189,6 +4202,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4308,7 +4327,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4687,7 +4706,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4700,7 +4719,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5396,6 +5415,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 
@@ -5683,7 +5703,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6121,7 +6141,16 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.2.4",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+dependencies = [
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -6134,10 +6163,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "zstd-sys"
-version = "2.0.16+zstd.1.5.7"
+name = "zstd-safe"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.2+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

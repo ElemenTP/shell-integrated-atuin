@@ -22,10 +22,16 @@ option(BUILD_TESTS        "Build test executables"                          ON)
 set(ATUIN_SOURCE "AUTO" CACHE STRING
     "Atuin source: 'AUTO' to clone from GitHub, or a local path")
 # The in-process feature is developed on a branch, so pin the commit (not the
-# moving branch) to keep AUTO builds reproducible. Bump this after rebasing the
-# branch; a local ATUIN_SOURCE checkout that differs only gets a warning.
-set(ATUIN_GIT_TAG "86c9d1f8718ea0deab10d2e0b368ef1f9d4530f6" CACHE STRING
-    "Atuin commit/tag to fetch when ATUIN_SOURCE=AUTO")
+# moving branch) to keep AUTO builds reproducible. This is a normal variable
+# (not a cache entry) so bumping it here also takes effect in an existing build
+# directory; use -DATUIN_GIT_TAG_OVERRIDE for a one-off pin. A local
+# ATUIN_SOURCE checkout that differs only gets a warning.
+set(ATUIN_GIT_TAG "b1eced8b04ccc7f215e46189b70fdaef45fab1cb")
+set(ATUIN_GIT_TAG_OVERRIDE "" CACHE STRING
+    "Override ATUIN_GIT_TAG (Atuin commit/tag fetched when ATUIN_SOURCE=AUTO)")
+if(ATUIN_GIT_TAG_OVERRIDE)
+    set(ATUIN_GIT_TAG "${ATUIN_GIT_TAG_OVERRIDE}")
+endif()
 # The Atuin version the FFI reports. Empty = derive it from the checkout.
 set(ATUIN_VERSION "" CACHE STRING
     "Atuin version embedded in the FFI (empty: derive from ATUIN_SRC_DIR/Cargo.toml)")
@@ -111,7 +117,7 @@ if(EXISTS "${ATUIN_SRC_DIR}/.git")
     if(_atuin_git_rc EQUAL 0 AND NOT _atuin_head STREQUAL ATUIN_GIT_TAG)
         message(WARNING
             "Atuin checkout ${_atuin_head} differs from the pinned ATUIN_GIT_TAG "
-            "${ATUIN_GIT_TAG}; pass -DATUIN_GIT_TAG to update the pin")
+            "${ATUIN_GIT_TAG}; use -DATUIN_GIT_TAG_OVERRIDE=<commit> for a one-off pin")
     endif()
 endif()
 

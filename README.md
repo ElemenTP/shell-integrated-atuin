@@ -107,7 +107,7 @@ sudo cmake --install build --config Release --prefix /usr/local
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `ATUIN_SOURCE` | `AUTO` | Atuin 源码：`AUTO` 从 GitHub 拉取 `ATUIN_GIT_TAG`，或本地路径 |
-| `ATUIN_GIT_TAG` | `86c9d1f8…`（当前 in-process tip） | `ATUIN_SOURCE=AUTO` 时钉住的 Atuin commit；也可以写 branch/tag |
+| `ATUIN_GIT_TAG_OVERRIDE` | 空 | 覆盖 `CMakeLists.txt` 里钉住的 Atuin commit（`ATUIN_SOURCE=AUTO` 时；也可以写 branch/tag）；不设置就用文件里的 pin |
 | `ATUIN_VERSION` | 空（自动） | FFI 上报的 Atuin 版本；空则从源码树的 `Cargo.toml` 派生 |
 | `ZSH_SOURCE` | `AUTO` | zsh 源码：`AUTO` 下载 zsh 5.9.2，或已配置的源码树路径 |
 | `ZSH_VERSION` | `5.9.2` | 下载 zsh 的版本（`ZSH_SOURCE=AUTO` 时） |

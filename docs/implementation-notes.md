@@ -659,9 +659,11 @@ zsh 测试逻辑不写进 CMake `COMMAND` 内联字符串。`${var}`、引号层
 
 三者的关系：
 
-- **`ATUIN_GIT_TAG`**（CMake cache）：`ATUIN_SOURCE=AUTO` 时拉取的 Atuin
-  commit（也可以是 branch/tag）。它钉住的是**上游源码**，rebase `in-process`
-  之后要手动 bump；本地 `ATUIN_SOURCE=…` 的 HEAD 与它不一致时只 warning。
+- **`ATUIN_GIT_TAG`**（CMakeLists 里的普通变量）：`ATUIN_SOURCE=AUTO` 时拉取的
+  Atuin commit（也可以是 branch/tag）。它钉住的是**上游源码**，rebase
+  `in-process` 之后要手动 bump；用普通变量而不是 cache，是为了让改文件里的 pin
+  在已有 build 目录里也生效（一次性覆盖用 `-DATUIN_GIT_TAG_OVERRIDE=<commit>`）。
+  本地 `ATUIN_SOURCE=…` 的 HEAD 与它不一致时只 warning。
 - **`ATUIN_VERSION`**（CMake cache，空则自动）：从 `${ATUIN_SRC_DIR}/Cargo.toml`
   的 `version = "x.y.z"` 解析。`rust_src/build.rs` 通过环境变量拿到它（直接
   `cargo build` 时则自己读 `../atuin/Cargo.toml`），以
