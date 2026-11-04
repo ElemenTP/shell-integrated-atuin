@@ -155,7 +155,7 @@ source "$ATUIN_NATIVE_DIR/atuin-native.plugin.zsh"
 3. 注册 preexec / precmd / zshaddhistory hook
 4. 安装 zsh-autosuggestions 的 `atuin_native` strategy。无论插件在 zsh-autosuggestions **之前还是之后** source，都会把 `atuin_native` 前插到 `ZSH_AUTOSUGGEST_STRATEGY`（变量未设置时直接设为 `(atuin_native)`）。strategy 故意不叫官方的 `atuin`，避免与 `atuin init zsh` 安装的策略同名冲突
 5. 定义 `atuin-search` / `atuin-up-search` 等兼容 ZLE widget
-6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）；设置 `ATUIN_NOBIND` 可跳过绑定（同官方）
+6. 按 `atuin init zsh` 的默认键位自动绑定 Ctrl+R / UpArrow（emacs/viins/vicmd）；`ATUIN_NOBIND` 可全部跳过，`bind_ctrl_r` / `bind_up_arrow`（18.24.5）可分别关闭，行为与官方 `init` 一致
 7. 支持输出捕获标记（`__atuin_pty_proxy_owns_tty=1` 时，逻辑与官方 `atuin.zsh` 相同）：
    18.24 起使用 Atuin 自己的 `\033]18188735;C|D;…\a` 序列，仅对旧 pty-proxy
    （`ATUIN_PTY_PROXY_ACTIVE=1`）保留 OSC 133

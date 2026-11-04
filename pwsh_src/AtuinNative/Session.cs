@@ -404,6 +404,23 @@ public static class Session
         return Marshal.PtrToStringUTF8(ptr) ?? "unknown";
     }
 
+    /// <summary>
+    /// Which search key bindings the resolved configuration asks for
+    /// (<c>bind_ctrl_r</c> / <c>bind_up_arrow</c>, atuin 18.24.5). Both default
+    /// to true; <c>ATUIN_NOBIND</c> is applied separately, as it is by
+    /// <c>atuin init</c>.
+    /// </summary>
+    public static (bool CtrlR, bool UpArrow) Bindings()
+    {
+        IntPtr error = NativeMethods.Bindings(out int ctrlR, out int upArrow);
+        if (error != IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                $"atuin Bindings failed: {TakeError(error)}");
+        }
+        return (ctrlR != 0, upArrow != 0);
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------

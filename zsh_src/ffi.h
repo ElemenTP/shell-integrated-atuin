@@ -156,9 +156,15 @@ void atuin_free(char *ptr);
  * atuin_session_uuid returns NULL on success and writes a session-owned
  * pointer to *out (do NOT free); on failure it returns an error string and
  * sets *out to NULL.
- * atuin_version returns a process-lifetime pointer (do NOT free). */
+ * atuin_version returns a process-lifetime pointer (do NOT free).
+ * atuin_bindings returns NULL on success and writes 1/0 to *ctrl_r and
+ * *up_arrow: whether the resolved configuration asks for the Ctrl+R / UpArrow
+ * search bindings (`bind_ctrl_r` / `bind_up_arrow`). ATUIN_NOBIND is the
+ * caller's decision, as it is for `atuin init`. Both pointers must be non-NULL.
+ */
 char *atuin_session_uuid(const char **out);
 const char *atuin_version(void);
+char *atuin_bindings(int *ctrl_r, int *up_arrow);
 
 #ifdef __cplusplus
 }

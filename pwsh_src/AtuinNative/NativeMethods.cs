@@ -246,4 +246,12 @@ internal static unsafe partial class NativeMethods
     /// <summary>Return the library version (static, must NOT be freed).</summary>
     [LibraryImport(LibName, EntryPoint = "atuin_version")]
     internal static partial IntPtr Version();
+
+    /// <summary>
+    /// Whether the resolved configuration asks for the Ctrl+R / UpArrow
+    /// search bindings (`bind_ctrl_r` / `bind_up_arrow`). Writes 1 or 0.
+    /// Returns <see cref="IntPtr.Zero"/> on success.
+    /// </summary>
+    [LibraryImport(LibName, EntryPoint = "atuin_bindings")]
+    internal static partial IntPtr Bindings(out int ctrlR, out int upArrow);
 }

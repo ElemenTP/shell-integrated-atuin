@@ -26,7 +26,7 @@ set(ATUIN_SOURCE "AUTO" CACHE STRING
 # (not a cache entry) so bumping it here also takes effect in an existing build
 # directory; use -DATUIN_GIT_TAG_OVERRIDE for a one-off pin. A local
 # ATUIN_SOURCE checkout that differs only gets a warning.
-set(ATUIN_GIT_TAG "b1eced8b04ccc7f215e46189b70fdaef45fab1cb")
+set(ATUIN_GIT_TAG "d83ade1101040a6e4427ca859b3554a267a1c574")
 set(ATUIN_GIT_TAG_OVERRIDE "" CACHE STRING
     "Override ATUIN_GIT_TAG (Atuin commit/tag fetched when ATUIN_SOURCE=AUTO)")
 if(ATUIN_GIT_TAG_OVERRIDE)

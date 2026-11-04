@@ -376,11 +376,37 @@ function Restore-AtuinKeyHandler {
 # `atuin init powershell` ends with `Enable-AtuinSearchKeys -CtrlR $true
 # -UpArrow $true`; without this, importing the module defines the handler but
 # Ctrl+R / UpArrow keep their PSReadLine defaults and never reach the TUI.
+# atuin 18.24.5 lets the configuration turn each binding off (`bind_ctrl_r` /
+# `bind_up_arrow`), and ATUIN_NOBIND disables both; follow the same rules.
+$script:BoundCtrlR = $false
+$script:BoundUpArrow = $false
 if (Get-Module PSReadLine -ErrorAction Ignore) {
-    # Remember what the chords were bound to so OnRemove can restore them.
-    $script:PreviousCtrlRHandler = Get-AtuinSavedKeyHandler -Chord "Ctrl+r"
-    $script:PreviousUpArrowHandler = Get-AtuinSavedKeyHandler -Chord "UpArrow"
-    Enable-AtuinSearchKeys -CtrlR $true -UpArrow $true
+    $bindCtrlR = $true
+    $bindUpArrow = $true
+    if ($env:ATUIN_NOBIND) {
+        $bindCtrlR = $false
+        $bindUpArrow = $false
+    } else {
+        try {
+            $bindings = [AtuinNative.Session]::Bindings()
+            $bindCtrlR = $bindings.CtrlR
+            $bindUpArrow = $bindings.UpArrow
+        } catch {
+            Write-Warning "atuin-native: could not read the binding settings: $_"
+        }
+    }
+
+    # Remember what the chords were bound to so OnRemove can restore them. A
+    # disabled chord is left untouched, and not restored later.
+    if ($bindCtrlR) {
+        $script:PreviousCtrlRHandler = Get-AtuinSavedKeyHandler -Chord "Ctrl+r"
+        $script:BoundCtrlR = $true
+    }
+    if ($bindUpArrow) {
+        $script:PreviousUpArrowHandler = Get-AtuinSavedKeyHandler -Chord "UpArrow"
+        $script:BoundUpArrow = $true
+    }
+    Enable-AtuinSearchKeys -CtrlR $bindCtrlR -UpArrow $bindUpArrow
 }
 
 # ---- Export the public API ---------------------------------------------------
@@ -403,12 +429,17 @@ $MyInvocation.MyCommand.ScriptBlock.Module.OnRemove = {
     if (Get-Module PSReadLine -ErrorAction Ignore) {
         # Remove-PSReadLineKeyHandler would leave the chords unbound rather
         # than reverting to their defaults, so restore what was there before.
-        Restore-AtuinKeyHandler -Chord "Ctrl+r" `
-            -SavedFunction $script:PreviousCtrlRHandler `
-            -DefaultFunction "ReverseSearchHistory"
-        Restore-AtuinKeyHandler -Chord "UpArrow" `
-            -SavedFunction $script:PreviousUpArrowHandler `
-            -DefaultFunction "PreviousHistory"
+        # Only chords this module actually bound are touched.
+        if ($script:BoundCtrlR) {
+            Restore-AtuinKeyHandler -Chord "Ctrl+r" `
+                -SavedFunction $script:PreviousCtrlRHandler `
+                -DefaultFunction "ReverseSearchHistory"
+        }
+        if ($script:BoundUpArrow) {
+            Restore-AtuinKeyHandler -Chord "UpArrow" `
+                -SavedFunction $script:PreviousUpArrowHandler `
+                -DefaultFunction "PreviousHistory"
+        }
     }
 
     [AtuinNative.AtuinEnvironment]::Remove('ATUIN_SESSION')

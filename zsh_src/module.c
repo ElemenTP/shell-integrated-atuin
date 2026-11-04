@@ -30,6 +30,8 @@
  *   atuin_stats          — accepts -v/-q, writes $ATUIN_STATS_*
  *   atuin_session_id     — writes $ATUIN_SESSION
  *   atuin_version        — accepts -q, writes $ATUIN_VERSION
+ *   atuin_bindings       — writes $ATUIN_BIND_CTRL_R / $ATUIN_BIND_UP_ARROW
+ *                          (whether the config asks for the key bindings)
  */
 
 #define MODULE
@@ -55,6 +57,7 @@
 #define BUILTIN_ATUIN_STATS "atuin_stats"
 #define BUILTIN_ATUIN_SESSION_ID "atuin_session_id"
 #define BUILTIN_ATUIN_VERSION "atuin_version"
+#define BUILTIN_ATUIN_BINDINGS "atuin_bindings"
 
 /* Forward declarations */
 // clang-format off
@@ -66,6 +69,7 @@ static int bin_atuin_search_prefix(char *name, char **argv, Options ops, int fun
 static int bin_atuin_search_interactive(char *name, char **argv, Options ops, int func);
 static int bin_atuin_stats(char *name, char **argv, Options ops, int func);
 static int bin_atuin_version(char *name, char **argv, Options ops, int func);
+static int bin_atuin_bindings(char *name, char **argv, Options ops, int func);
 // clang-format on
 
 /* Builtin table */
@@ -79,6 +83,7 @@ static struct builtin bintab[] = {
     BUILTIN(BUILTIN_ATUIN_STATS,         0, bin_atuin_stats,         0, -1, 0, NULL, NULL),
     BUILTIN(BUILTIN_ATUIN_SESSION_ID,    0, bin_atuin_session_id,    0, 0, 0, NULL, NULL),
     BUILTIN(BUILTIN_ATUIN_VERSION,       0, bin_atuin_version,       0, -1, 0, NULL, NULL),
+    BUILTIN(BUILTIN_ATUIN_BINDINGS,      0, bin_atuin_bindings,      0, 0, 0, NULL, NULL),
 };
 // clang-format on
 
@@ -748,6 +753,30 @@ static int bin_atuin_version(UNUSED(char *name), char **argv,
     printf("%s\n", version);
   }
 
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Builtin: atuin_bindings                                           */
+/*                                                                   */
+/* Writes $ATUIN_BIND_CTRL_R / $ATUIN_BIND_UP_ARROW (1 or 0): whether */
+/* the resolved configuration asks for the search key bindings       */
+/* (`bind_ctrl_r` / `bind_up_arrow`, atuin 18.24.5). ATUIN_NOBIND is */
+/* a separate shell-side opt-out, exactly as with `atuin init`.      */
+/* ------------------------------------------------------------------ */
+
+static int bin_atuin_bindings(UNUSED(char *name), UNUSED(char **argv),
+                              UNUSED(Options ops), UNUSED(int func)) {
+  int ctrl_r = 1;
+  int up_arrow = 1;
+  char *err = atuin_bindings(&ctrl_r, &up_arrow);
+  if (err) {
+    report_ffi_error(err, BUILTIN_ATUIN_BINDINGS);
+    return 1;
+  }
+
+  set_str_param("ATUIN_BIND_CTRL_R", ctrl_r ? "1" : "0");
+  set_str_param("ATUIN_BIND_UP_ARROW", up_arrow ? "1" : "0");
   return 0;
 }
 

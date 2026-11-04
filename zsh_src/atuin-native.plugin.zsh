@@ -367,18 +367,29 @@ fi
 
 # Same default key bindings as `atuin init zsh` (see atuin_orig.zsh). The
 # official init skips them when ATUIN_NOBIND is set, so users who bind the
-# widgets themselves can opt out in the same way.
+# widgets themselves can opt out in the same way. atuin 18.24.5 also lets the
+# configuration turn each group off (`bind_ctrl_r` / `bind_up_arrow`); ask the
+# in-process session for the resolved values so the plugin matches `init`.
 if [[ -o interactive ]] && [[ -z "${ATUIN_NOBIND:-}" ]]; then
-    bindkey -M emacs '^r' atuin-search
-    bindkey -M viins '^r' atuin-search-viins
-    bindkey -M vicmd '/' atuin-search
-    bindkey -M emacs '^[[A' atuin-up-search
-    bindkey -M vicmd '^[[A' atuin-up-search-vicmd
-    bindkey -M viins '^[[A' atuin-up-search-viins
-    bindkey -M emacs '^[OA' atuin-up-search
-    bindkey -M vicmd '^[OA' atuin-up-search-vicmd
-    bindkey -M viins '^[OA' atuin-up-search-viins
-    bindkey -M vicmd 'k' atuin-up-search-vicmd
+    if (( $+builtins[atuin_bindings] )); then
+        atuin_bindings >/dev/null 2>&1
+    fi
+
+    if [[ ${ATUIN_BIND_CTRL_R:-1} = 1 ]]; then
+        bindkey -M emacs '^r' atuin-search
+        bindkey -M viins '^r' atuin-search-viins
+        bindkey -M vicmd '/' atuin-search
+    fi
+
+    if [[ ${ATUIN_BIND_UP_ARROW:-1} = 1 ]]; then
+        bindkey -M emacs '^[[A' atuin-up-search
+        bindkey -M vicmd '^[[A' atuin-up-search-vicmd
+        bindkey -M viins '^[[A' atuin-up-search-viins
+        bindkey -M emacs '^[OA' atuin-up-search
+        bindkey -M vicmd '^[OA' atuin-up-search-vicmd
+        bindkey -M viins '^[OA' atuin-up-search-viins
+        bindkey -M vicmd 'k' atuin-up-search-vicmd
+    fi
 fi
 
 # An old proxy (ATUIN_PTY_PROXY_ACTIVE=1) may already have started capturing

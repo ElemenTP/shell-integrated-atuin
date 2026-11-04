@@ -536,6 +536,12 @@ preexec 的最后一条命令如果是 `[[ cond ]] || return`，在 cond 为假�
   `133;B` 复位标记。
 - 键位绑定尊重 `ATUIN_NOBIND`；pwsh 退出 TUI 后调用 `InvokePrompt` 并遵循
   `ATUIN_POWERSHELL_PROMPT_OFFSET`（未设置时按 prompt 行数推导）。
+- 18.24.5 的 `bind_ctrl_r` / `bind_up_arrow`：官方 `init` 据此决定是否输出
+  Ctrl+R / UpArrow 的绑定。插件通过新增的 `atuin_bindings` FFI/builtin 读取
+  解析后的设置（zsh 写 `$ATUIN_BIND_CTRL_R` / `$ATUIN_BIND_UP_ARROW`；
+  pwsh 用 `[AtuinNative.Session]::Bindings()`），两组键位分别受控；`ATUIN_NOBIND`
+  仍是整体开关。没有 session 时（pwsh 延迟初始化、import 阶段）该接口直接解析
+  `Settings::new()`，避免为了读两个布尔值提前打开数据库。
 
 进程内无法提供、有意不做的官方功能（都需要外部 `atuin` 二进制 / daemon）：
 

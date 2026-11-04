@@ -154,6 +154,22 @@ _atuin_native_precmd
     && echo "PASS: prompt is not wrapped for output capture" \
     || { echo "FAIL: PROMPT=${PROMPT@q} RPROMPT=${RPROMPT@q}"; exit 1; }
 
+# ---- Binding settings (atuin 18.24.5) --------------------------------------
+# `bind_ctrl_r` / `bind_up_arrow` decide whether `atuin init` binds each chord;
+# the plugin asks the session for the resolved values.
+atuin_bindings
+[[ "${ATUIN_BIND_CTRL_R:-}" == 1 && "${ATUIN_BIND_UP_ARROW:-}" == 1 ]] \
+    && echo "PASS: bindings default to ctrl-r and up-arrow" \
+    || { echo "FAIL: bindings = ${ATUIN_BIND_CTRL_R:-} ${ATUIN_BIND_UP_ARROW:-}"; exit 1; }
+
+bindings_off=$(env ATUIN_BIND_CTRL_R=false \
+    ATUIN_DATA_DIR="$ATUIN_DATA_DIR" ATUIN_CONFIG_DIR="$ATUIN_CONFIG_DIR" \
+    ATUIN_NATIVE_DIR="$ATUIN_NATIVE_DIR" \
+    zsh -c 'module_path=($ATUIN_NATIVE_DIR $module_path); zmodload atuin_native; atuin_bindings; print -r -- "$ATUIN_BIND_CTRL_R $ATUIN_BIND_UP_ARROW"')
+[[ "$bindings_off" == "0 1" ]] \
+    && echo "PASS: bind_ctrl_r=false disables ctrl-r only" \
+    || { echo "FAIL: bindings with ATUIN_BIND_CTRL_R=false = ${bindings_off@q}"; exit 1; }
+
 zmodload -u atuin_native
 echo "PASS: module unloaded"
 

@@ -108,6 +108,12 @@ try
         CheckEqual(Session.SessionUuid(), uuid2,
             "second Initialize keeps the active session");
 
+        // atuin 18.24.5: bind_ctrl_r / bind_up_arrow decide the bindings; the
+        // isolated config here sets neither, so both default to on.
+        (bool CtrlR, bool UpArrow) bindings = Session.Bindings();
+        Check(bindings.CtrlR && bindings.UpArrow,
+            "bindings default to Ctrl+R and UpArrow");
+
         // ── History round-trip ──────────────────────────────────────────
         string id = RequireId(Session.HistoryStart("echo csharp-unit-test", "/tmp"));
         Check(!string.IsNullOrEmpty(id), "HistoryStart returns an ID");

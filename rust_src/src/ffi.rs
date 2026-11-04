@@ -41,6 +41,7 @@
 //! | `atuin_search_interactive` | `*out` selection, or NULL on cancel | `atuin_free` |
 //! | `atuin_session_uuid` | `*out` session-owned UUID | must NOT be freed |
 //! | `atuin_stats` | `*out` session counter snapshot | must NOT be freed |
+//! | `atuin_bindings` | `*ctrl_r` / `*up_arrow` 1 or 0 | nothing |
 //! | `atuin_version` | returned static string | must NOT be freed |
 
 use libc::c_char;
@@ -897,6 +898,59 @@ pub extern "C" fn atuin_version() -> *const c_char {
     VERSION.as_ptr().cast()
 }
 
+/// Report which search key bindings `atuin init` would install for the
+/// resolved configuration.
+///
+/// `*ctrl_r` and `*up_arrow` receive 1 when the configuration asks for the
+/// binding (`bind_ctrl_r` / `bind_up_arrow`, both default true) and 0 when it
+/// does not. `ATUIN_NOBIND` is deliberately left to the caller: it is a
+/// shell-side decision and `atuin init` applies it after the settings too.
+///
+/// Returns NULL on success, otherwise an allocated error string.
+///
+/// # Safety
+/// `ctrl_r` and `up_arrow` must be non-NULL and point to writable `int`
+/// storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn atuin_bindings(
+    ctrl_r: *mut c_int,
+    up_arrow: *mut c_int,
+) -> *mut c_char {
+    ffi_guard_error!({
+        if ctrl_r.is_null() || up_arrow.is_null() {
+            return error_string("null argument");
+        }
+        guard_fork!();
+
+        // The PowerShell module asks at import time, before it lazily creates
+        // the session, so fall back to resolving the settings alone: they are
+        // what `atuin init` consults, and that needs no database.
+        let bindings = match with_session::<_, String>(|session| {
+            Ok((
+                i32::from(session.session.bind_ctrl_r()),
+                i32::from(session.session.bind_up_arrow()),
+            ))
+        }) {
+            Ok(bindings) => bindings,
+            Err(_) => match atuin_client::settings::Settings::new() {
+                Ok(settings) => (
+                    i32::from(settings.bind_ctrl_r),
+                    i32::from(settings.bind_up_arrow),
+                ),
+                Err(e) => return error_string(format!("{e:#}")),
+            },
+        };
+
+        // SAFETY: both pointers were checked non-NULL above; the caller
+        // guarantees they are writable `int` storage.
+        unsafe {
+            *ctrl_r = bindings.0;
+            *up_arrow = bindings.1;
+        }
+        ptr::null_mut()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -1363,6 +1417,31 @@ mod tests {
             "null out pointer must be rejected before the TUI starts"
         );
         take_error(err);
+    }
+
+    #[test]
+    fn test_bindings_reports_booleans() {
+        let _session = TestSession::new();
+
+        let (mut ctrl_r, mut up_arrow) = (-1, -1);
+        let err = unsafe { atuin_bindings(&mut ctrl_r, &mut up_arrow) };
+        assert_ok(err, "atuin_bindings");
+        // The test session's config only sets `data_dir`, so both default to
+        // true; assert the shape either way so a developer's config can't make
+        // the test lie.
+        assert!(matches!(ctrl_r, 0 | 1), "ctrl_r = {ctrl_r}");
+        assert!(matches!(up_arrow, 0 | 1), "up_arrow = {up_arrow}");
+    }
+
+    #[test]
+    fn test_bindings_without_session_resolves_settings() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // The PowerShell module asks at import time, before creating a session.
+        let (mut ctrl_r, mut up_arrow) = (-1, -1);
+        let err = unsafe { atuin_bindings(&mut ctrl_r, &mut up_arrow) };
+        assert_ok(err, "atuin_bindings without a session");
+        assert!(matches!(ctrl_r, 0 | 1), "ctrl_r = {ctrl_r}");
+        assert!(matches!(up_arrow, 0 | 1), "up_arrow = {up_arrow}");
     }
 
     #[test]
