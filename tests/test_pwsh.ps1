@@ -53,6 +53,18 @@ try {
     [AtuinNative.Session]::Initialize()
     Write-Host "PASS: session created"
 
+    # Named properties, not tuple Item1/Item2: the module reads
+    # $bindings.CtrlR at import, and a ValueTuple would make PowerShell throw
+    # "The property 'CtrlR' cannot be found on this object".
+    $bindings = [AtuinNative.Session]::Bindings()
+    if ($bindings.CtrlR -isnot [bool] -or $bindings.UpArrow -isnot [bool]) {
+        throw "Session.Bindings() does not expose CtrlR/UpArrow"
+    }
+    if (-not $bindings.CtrlR -or -not $bindings.UpArrow) {
+        throw "Session.Bindings() = $($bindings.CtrlR)/$($bindings.UpArrow); the isolated config expects both"
+    }
+    Write-Host "PASS: Session.Bindings() exposes CtrlR/UpArrow"
+
     $firstUuid = [AtuinNative.Session]::SessionUuid()
     [AtuinNative.Session]::Initialize()   # idempotent: keeps the active session
     if ([AtuinNative.Session]::SessionUuid() -ne $firstUuid) {
@@ -94,8 +106,11 @@ try {
 
     # ---- Full module import (manifest + .psm1) ----
     Import-Module PSReadLine -ErrorAction SilentlyContinue
-    Import-Module $manifestPath -Force
-    Write-Host "PASS: module imported"
+    Import-Module $manifestPath -Force -WarningVariable moduleWarnings
+    if ($moduleWarnings) {
+        throw "module import warned: $($moduleWarnings -join '; ')"
+    }
+    Write-Host "PASS: module imported without warnings"
 
     Initialize-AtuinNativeSession
     $moduleId = [AtuinNative.Session]::HistoryStart("echo pwsh-module-test", "/tmp")

@@ -110,7 +110,7 @@ try
 
         // atuin 18.24.5: bind_ctrl_r / bind_up_arrow decide the bindings; the
         // isolated config here sets neither, so both default to on.
-        (bool CtrlR, bool UpArrow) bindings = Session.Bindings();
+        AtuinBindings bindings = Session.Bindings();
         Check(bindings.CtrlR && bindings.UpArrow,
             "bindings default to Ctrl+R and UpArrow");
 

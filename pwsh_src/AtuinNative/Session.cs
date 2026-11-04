@@ -29,6 +29,27 @@ public sealed class AtuinSearchOptions
 }
 
 /// <summary>
+/// Which search key bindings the resolved configuration asks for
+/// (<c>bind_ctrl_r</c> / <c>bind_up_arrow</c>, atuin 18.24.5).
+/// </summary>
+/// <remarks>
+/// A named class rather than a <see cref="System.ValueTuple{T1,T2}"/>: C#
+/// tuple element names are compile-time metadata, so PowerShell only sees
+/// <c>Item1</c>/<c>Item2</c> and <c>$bindings.CtrlR</c> would throw.
+/// </remarks>
+public sealed class AtuinBindings
+{
+    public bool CtrlR { get; }
+    public bool UpArrow { get; }
+
+    public AtuinBindings(bool ctrlR, bool upArrow)
+    {
+        CtrlR = ctrlR;
+        UpArrow = upArrow;
+    }
+}
+
+/// <summary>
 /// Managed wrapper around the atuin-ffi native library.
 ///
 /// The native library exposes exactly one process-wide session (Atuin's client
@@ -410,7 +431,7 @@ public static class Session
     /// to true; <c>ATUIN_NOBIND</c> is applied separately, as it is by
     /// <c>atuin init</c>.
     /// </summary>
-    public static (bool CtrlR, bool UpArrow) Bindings()
+    public static AtuinBindings Bindings()
     {
         IntPtr error = NativeMethods.Bindings(out int ctrlR, out int upArrow);
         if (error != IntPtr.Zero)
@@ -418,7 +439,7 @@ public static class Session
             throw new InvalidOperationException(
                 $"atuin Bindings failed: {TakeError(error)}");
         }
-        return (ctrlR != 0, upArrow != 0);
+        return new AtuinBindings(ctrlR != 0, upArrow != 0);
     }
 
     // ------------------------------------------------------------------
