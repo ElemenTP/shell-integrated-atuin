@@ -153,6 +153,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -229,7 +235,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atuin"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "ansi-to-tui",
  "async-trait",
@@ -246,6 +252,7 @@ dependencies = [
  "clap_complete",
  "clap_complete_nushell",
  "colored",
+ "const_format",
  "crossterm",
  "derive_more",
  "easy-cast",
@@ -296,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-client"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -357,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-common"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "async-stream",
  "base64",
@@ -379,6 +386,7 @@ dependencies = [
  "i18n-embed-fl",
  "imara-diff",
  "itertools 0.15.0",
+ "libc",
  "libsqlite3-sys",
  "memchr",
  "notify",
@@ -424,13 +432,14 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "xxhash-rust",
+ "yaml-rust2",
  "zeroize",
  "zstd 0.14.3",
 ]
 
 [[package]]
 name = "atuin-domain"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "async-trait",
  "atuin-common",
@@ -459,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-dotfiles"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -487,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-history"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "atuin-client",
  "crossterm",
@@ -499,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-kv"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -519,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "atuin-scripts"
-version = "18.24.5"
+version = "18.24.6"
 dependencies = [
  "atuin-client",
  "atuin-common",
@@ -787,10 +796,16 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "677f73c6dff8ee9520bc8ebd0019910584ac504dcd2dfe2c1276798e3565dc83"
 dependencies = [
+ "anstream",
  "clap",
  "clap-couture-derive",
+ "inquire",
+ "libc",
  "pulldown-cmark",
+ "secrecy",
+ "thiserror 2.0.20",
  "unicode-width",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -947,6 +962,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
+name = "const_format"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3decb4d6965448659923544a634a0571ba44cede4e11ef15a5a317126840454"
+dependencies = [
+ "const_format_proc_macros",
+ "konst",
+]
+
+[[package]]
+name = "const_format_proc_macros"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "941b570269a642506f08cb5b688c04bfa6cfd41a26f8bcdc49db8fd00c0ab659"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-xid",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -970,6 +1006,12 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "core_detect"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "cpufeatures"
@@ -1430,6 +1472,20 @@ name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89253175e704ab869b04f9db224d38630e0211a53841a79181deae0889e169f5"
+dependencies = [
+ "cfg-if",
+ "core_detect",
+ "multiversion_no_op",
+ "rustversion",
+ "scopeguard",
+ "simdutf8",
+]
 
 [[package]]
 name = "enum_dispatch"
@@ -2372,6 +2428,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "inquire"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6654738b8024300cf062d04a1c13c10c8e2cea598ec1c47dc9b6641159429756"
+dependencies = [
+ "bitflags 2.13.1",
+ "crossterm",
+ "dyn-clone",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "instability"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2542,6 +2611,21 @@ dependencies = [
  "portable-atomic",
  "thiserror 2.0.20",
 ]
+
+[[package]]
+name = "konst"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "128133ed7824fcd73d6e7b17957c5eb7bacb885649bd8c69708b2331a10bcefb"
+dependencies = [
+ "konst_macro_rules",
+]
+
+[[package]]
+name = "konst_macro_rules"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
 name = "kqueue"
@@ -2813,6 +2897,12 @@ dependencies = [
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "multiversion_no_op"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "native-tls"
@@ -4324,6 +4414,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "siphasher"
@@ -6030,6 +6126,17 @@ name = "xxhash-rust"
 version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
+
+[[package]]
+name = "yaml-rust2"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b36710ce3a279cfce8465dbab826f161675a262950b922cb2c3663852dfe9eb0"
+dependencies = [
+ "arraydeque",
+ "encoding_rs",
+ "hashlink 0.11.1",
+]
 
 [[package]]
 name = "yoke"
