@@ -26,7 +26,7 @@ set(ATUIN_SOURCE "AUTO" CACHE STRING
 # (not a cache entry) so bumping it here also takes effect in an existing build
 # directory; use -DATUIN_GIT_TAG_OVERRIDE for a one-off pin. A local
 # ATUIN_SOURCE checkout that differs only gets a warning.
-set(ATUIN_GIT_TAG "79f4397076dbabbafcbd36a16606161fea5aafa3")
+set(ATUIN_GIT_TAG "37c9082e49ed242074bc36f0100997bbac834efd")
 set(ATUIN_GIT_TAG_OVERRIDE "" CACHE STRING
     "Override ATUIN_GIT_TAG (Atuin commit/tag fetched when ATUIN_SOURCE=AUTO)")
 if(ATUIN_GIT_TAG_OVERRIDE)
@@ -245,10 +245,18 @@ add_custom_command(
     OUTPUT "${FFI_SHARED}"
     # build.rs embeds ATUIN_VERSION (and ATUIN_COMMIT) in the library, so the
     # reported version follows the Atuin checkout we build against.
+    #
+    # `--locked` is required, not just tidy: atuin depends on `locked-tripwire`
+    # (a guard against `cargo install` without `--locked`), whose 0.1.1002
+    # release fails compilation on purpose. Only the lockfile's 0.1.1 pin keeps
+    # the build working, and `--locked` guarantees that pin is used: any
+    # resolution that refreshes the package trips the wire. Refresh the lock
+    # deliberately with `cargo build --release` in rust_src (which resolves only
+    # what changed) when upstream dependencies change.
     COMMAND ${CMAKE_COMMAND} -E env
         "ATUIN_VERSION=${ATUIN_VERSION}"
         "ATUIN_COMMIT=${ATUIN_GIT_TAG}"
-        ${CARGO} build ${CARGO_RELEASE_FLAG}
+        ${CARGO} build ${CARGO_RELEASE_FLAG} --locked
     ${ATUIN_FFI_FIX}
     WORKING_DIRECTORY "${RUST_SRC_DIR}"
     DEPENDS ${ATUIN_FFI_DEPENDS}
@@ -395,7 +403,7 @@ if(BUILD_TESTS)
     )
 
     add_custom_target(test-rust
-        COMMAND ${CARGO} test ${CARGO_RELEASE_FLAG} -- --test-threads=1
+        COMMAND ${CARGO} test ${CARGO_RELEASE_FLAG} --locked -- --test-threads=1
         WORKING_DIRECTORY "${RUST_SRC_DIR}"
         USES_TERMINAL
     )

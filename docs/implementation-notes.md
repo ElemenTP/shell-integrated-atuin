@@ -168,6 +168,26 @@ octavo、output capture、daemon 与 server 的内部演进。与进程内集成
   `ATUIN_SESSION` / `ATUIN_SHLVL` / `ATUIN_HISTORY_ID`，它们不是 `Settings` 字段或
   会被忽略；`ATUIN_DATA_DIR`/`ATUIN_CONFIG_DIR` 的既有语义不变。
 
+### 1.5.1 上游 v18.24.2 → v18.24.8 变更审阅
+
+v18.24.2 之后每个版本都在 `in-process` 分支上跟随 rebase，本节记录与进程内
+集成相关的那部分（其余是 threads/MCP/octavo/daemon 的内部演进，进程内
+feature 不包含）。**已适配**：
+
+| 变更 | 处理 |
+|---|---|
+| 18.24.2：`Settings.data_dir`/`key_path` 改为 `AbsPathBuf`，`db_path`/`record_store_path`/`meta.db_path` 改为 `DbLocation` | `session.rs::new_with_datadir` 用 `AbsPathBuf::new` + `resolve` + `DbLocation::File` 钉住显式数据目录；FFI 锁同时升到 tokio 1.54.1（`AsyncFd::register`） |
+| 18.24.4：删除 `print_error`（改用 `error::CliError`）；`interactive::history` 增加 `&Held` 消息 sink | `lib.rs` 新增 `mod error;`；`session.rs` 把 `Held` push 进 `userio::log::SINK` 并传给 TUI，实现每会话输出捕获 |
+| 18.24.5：新增 `bind_ctrl_r`/`bind_up_arrow` 设置，`init` 计算后再按 shell 应用 `ATUIN_NOBIND` | 新增 `atuin_bindings` 导出；zsh `module.c` 写入 `$ATUIN_BIND_CTRL_R`/`$ATUIN_BIND_UP_ARROW`，pwsh 暴露 `Session.Bindings()`；两边的绑定逻辑据此决定是否绑定 |
+| 18.24.6：TUI 的 what's new 覆盖层（`whats_new::dismisses`/`had_input`） | 事件循环保留上游的 `had_input`/`dismisses` 逻辑，只把事件源换成 `input_event_read()`；"已读"状态写 meta store，随会话的隔离数据目录走，插件无需处理 |
+| 18.24.8：`config` 未知键告警（#4727，`settings/{aliases,unknown_keys}.rs`，`validate_str` 返回 `UnknownKeys`） | 只在 `atuin config`/`atuin config check`/`atuin doctor` 里使用，进程内路径不经过；`Settings::new()` 行为不变，`new_with_datadir` 的钉路径逻辑不受影响 |
+| 版本号 18.24.6 → 18.24.8（18.24.7/18.24.8 release） | `ATUIN_VERSION` 从 checkout 的 `Cargo.toml` 自动派生，`atuin_version()` 跟随；`ATUIN_GIT_TAG` 与 `rust_src/Cargo.lock` 随之 bump |
+
+**相关但进程内不提供（有意跳过）**：daemon 搜索索引重构与竞态修复（#4730）、
+`atuin pty-proxy` 在管道下不创建 pty（#4734，进程内不运行 pty-proxy）、
+threads/MCP/Hermes/Amp 等 agent hook、octavo/Teams 上传、`whats-new.txt` 文本
+更新（由上游 TUI 自带）。
+
 ## 2. Rust FFI 层
 
 ### 2.1 Rust 2024 的 unsafe attribute
@@ -678,9 +698,20 @@ zsh 测试逻辑不写进 CMake `COMMAND` 内联字符串。`${var}`、引号层
   `atuin-ffi` 自己的 crate 版本保持独立（当前 0.1.0），语义是 wrapper 版本。
 - **`rust_src/Cargo.lock`**：bump 上游后必须刷新。v18.24.2 的 tty 助手用了
   tokio 1.54 的 `AsyncFd::register`，而旧锁停在 1.53.1，release 构建（FFI 的
-  `default-features = false` 特性集）会直接编译失败。刷新命令：
-  `cargo update --manifest-path rust_src/Cargo.toml`（或按需 `-p <crate>`）。
-  这个坑 debug 构建不会暴露，因为 atuin 仓库的 `cargo check` 用的是默认特性。
+  `default-features = false` 特性集）会直接编译失败。这个坑 debug 构建不会暴露，
+  因为 atuin 仓库的 `cargo check` 用的是默认特性。
+  刷新方式：在 `rust_src` 里直接 `cargo build --release`（或不带 `--locked` 的
+  `cargo metadata`）。cargo 会把锁当作权威版本，只补新增/冲突的包，其余保持不动
+  —— 本次 v18.24.8 的锁 diff 因此只有 atuin 各 crate 的版本号、`serde_ignored`
+  和 `atuin-common` 的 `config` 依赖。不要用 `cargo update` 全量刷新：它会把几十个
+  无关 crate 一起升级（见下一条 `locked-tripwire`）。
+- **`--locked`**：CMake 里的 `cargo build`/`cargo test` 都带 `--locked`。这不是
+  洁癖：上游 atuin 依赖 `locked-tripwire`（专门用来阻止不带 `--locked` 的
+  `cargo install`），它的 `0.1.1002` 版本会在编译期 `compile_error!`，只有锁里
+  的 `0.1.1` 是空 crate。`cargo update` 会把 0.1.1002 拉进来，必须
+  `cargo update -p locked-tripwire --precise 0.1.1` 钉回去；`--locked` 保证
+  构建不会重新解析依赖把 tripwire 打开，也让"更新了 pin 却忘记刷新锁"在
+  构建时立即报错而不是静默换依赖。
 
 ## 6. 测试策略
 
