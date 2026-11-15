@@ -300,11 +300,11 @@ if(BUILD_ZSH_MODULE)
 
     if(APPLE)
         target_link_options(${ZSH_MODULE_NAME} PRIVATE
-            -Wl,-undefined,dynamic_lookup
+            -Wl,-undefined,dynamic_lookup -fPIC -O3 -flto -Wall -Wextra
         )
     else()
         target_link_options(${ZSH_MODULE_NAME} PRIVATE
-            -Wl,--allow-shlib-undefined -Wl,-z,lazy
+            -Wl,--allow-shlib-undefined -Wl,-z,lazy -fPIC -O3 -flto -Wall -Wextra
         )
     endif()
 
